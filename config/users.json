@@ -1,0 +1,22 @@
+{
+  "users": [
+    { "slack_user_id": "UXXXXXXXX", "name": "Alice" },
+    { "slack_user_id": "UYYYYYYYY", "name": "Bob" }
+  ],
+  "schedule": {
+    "send_time_hour": 18,
+    "send_time_minute": 0,
+    "timezone": "Asia/Kolkata",
+    "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+  },
+  "reminder": {
+    "enabled": true,
+    "reminder_hour": 21,
+    "reminder_minute": 0
+  },
+  "messages": {
+    "checkin": "Hey! Quick daily check-in.\n\nPlease reply with:\n1. How many hours did you work today?\n2. What did you work on?\n\nYou can reply in one message or keep it simple, whatever works!",
+    "reminder": "Hey, just a reminder to send in your daily update when you get a chance!",
+    "confirmation": "Thanks! Your update has been logged."
+  }
+}
