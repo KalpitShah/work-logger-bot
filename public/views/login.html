@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in · Work Logger</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📋</text></svg>" />
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="login-brand">
+      <div class="login-logo">📋</div>
+      <h1>Work Logger</h1>
+      <p class="muted">Sign in to view the team dashboard</p>
+    </div>
+    <form id="login-form" autocomplete="on">
+      <label>
+        <span>Username</span>
+        <input type="text" name="username" id="username" autocomplete="username" required autofocus />
+      </label>
+      <label>
+        <span>Password</span>
+        <input type="password" name="password" id="password" autocomplete="current-password" required />
+      </label>
+      <button type="submit" class="btn btn-primary btn-block" id="login-btn">Sign in</button>
+      <p class="form-error" id="login-error" hidden></p>
+    </form>
+  </main>
+  <script src="/assets/login.js"></script>
+</body>
+</html>

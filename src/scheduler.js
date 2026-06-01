@@ -71,7 +71,7 @@ async function runDailyCheckin(app) {
         text: checkinMessage,
       });
 
-      dailyLog.markSent(userId);
+      dailyLog.markSent(userId, user.name);
       console.log(`Sent daily check-in to ${user.name} (${userId})`);
     } catch (err) {
       console.error(`Failed to send check-in to ${user.name} (${userId}):`, err.message);

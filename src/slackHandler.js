@@ -1,21 +1,10 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-
 const dailyLog = require('./dailyLog');
 const parser = require('./parser');
 const sheetsLogger = require('./sheetsLogger');
-
-const USERS_CONFIG_PATH = path.join(__dirname, '../config/users.json');
-
-/**
- * Reads config/users.json fresh from disk.
- */
-function loadConfig() {
-  const raw = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
-  return JSON.parse(raw);
-}
+const db = require('./db');
+const { loadConfig, todayString } = require('./config');
 
 /**
  * Returns the user record from config matching the given Slack user ID, or
@@ -64,9 +53,9 @@ function registerHandlers(app) {
       // 7. Parse the reply.
       const parsed = parser.parseReply(message.text);
 
-      // 8. Build the entry and append to the sheet.
+      // 8. Build the entry.
       const entry = {
-        date: new Date().toISOString().slice(0, 10),
+        date: todayString(),
         name: userRecord.name,
         slack_user_id: message.user,
         hours: parsed.hours,
@@ -76,7 +65,22 @@ function registerHandlers(app) {
         logged_at: new Date().toISOString(),
       };
 
-      await sheetsLogger.logEntry(entry);
+      // 8a. Persist to the local SQLite DB first so the dashboard always has
+      //     the record, regardless of Google Sheets configuration.
+      try {
+        db.insertEntry(entry);
+      } catch (dbErr) {
+        console.error('Failed to write entry to SQLite:', dbErr.message);
+        console.error('Unsaved entry:', JSON.stringify(entry));
+      }
+
+      // 8b. Best-effort: also append to Google Sheets if configured. A failure
+      //     here (e.g. no credentials) must not block logging or confirmation.
+      try {
+        await sheetsLogger.logEntry(entry);
+      } catch (sheetErr) {
+        // sheetsLogger already logs the error and raw entry.
+      }
 
       // 9. Mark the user as having replied.
       dailyLog.markReplied(message.user);

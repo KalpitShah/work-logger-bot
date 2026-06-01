@@ -2,35 +2,63 @@
 
 A production-ready Node.js bot that DMs your team a daily check-in over Slack,
 listens for their replies via **Socket Mode** (no public webhook needed), parses
-the hours worked and a description, and appends each entry to a **Google Sheet**.
+the hours worked and a description, stores everything in a **SQLite** database
+(and optionally a **Google Sheet**), and shows it all in an authenticated
+**web dashboard**.
 
-Runs persistently on a VPS under **PM2**.
+Runs on a VPS under **PM2**, or on managed Node.js hosting such as
+**Hostinger Business** (the dashboard's HTTP server doubles as the keep-alive the
+platform expects).
 
 ## How it works
 
 1. A `node-cron` job sends a daily DM to every user listed in
    `config/users.json` asking how many hours they worked and what they did.
 2. The bot connects to Slack over an outbound WebSocket (Socket Mode), so no
-   public HTTP endpoint or inbound firewall rule is required.
-3. When a configured user replies in their DM, the reply is parsed and a row is
-   appended to your Google Sheet via the Sheets v4 API.
+   public inbound webhook is required.
+3. When a configured user replies in their DM, the reply is parsed and stored in
+   a local **SQLite** database (and appended to your Google Sheet if configured).
 4. An optional reminder job nudges anyone who hasn't replied yet.
+5. A built-in **web dashboard** (password-protected) shows today's check-in
+   status (sent / awaiting / replied) and a searchable table of all logged
+   entries.
+
+## The dashboard
+
+Open the server's URL in a browser and sign in with `DASHBOARD_USERNAME` /
+`DASHBOARD_PASSWORD` (see `.env`). You get:
+
+- **Summary cards** — replied today, awaiting reply, hours logged in the last 7
+  days, and total entries.
+- **Today's Status tab** — every configured user with a colored badge
+  (Replied / Awaiting / Not sent) plus the times the message was sent and replied.
+- **All Entries tab** — every logged entry (date, name, hours, description, raw
+  reply, auto-parsed flag, logged-at), with filters by user, date range, and a
+  free-text search.
+
+The dashboard is plain HTML/CSS/JS (no build step) so it deploys anywhere.
 
 ## Project structure
 
 ```
 slack-work-logger/
   src/
-    index.js          entry point, initializes Bolt app and cron
+    index.js          entry point: web server + Bolt app + cron
+    webServer.js      Express dashboard (auth, API, static), binds to PORT
     scheduler.js      cron jobs that send daily DMs + reminders
     slackHandler.js   handles incoming DM replies via Bolt
-    sheetsLogger.js   appends rows to the Google Sheet
+    sheetsLogger.js   best-effort append of rows to the Google Sheet
     parser.js         extracts hours + description from free-text replies
-    dailyLog.js       tracks who was messaged today and their reply status
+    dailyLog.js       per-user daily check-in status (backed by SQLite)
+    db.js             SQLite (better-sqlite3) schema + queries
+    config.js         shared config + timezone-aware date helpers
+  public/
+    views/            login.html, index.html (dashboard)
+    assets/           styles.css, app.js, login.js
   config/
     users.json        users, schedule, reminder, and message text
   data/
-    daily-log.json    runtime state (auto-created, git-ignored)
+    work-logger.db    SQLite database (auto-created, git-ignored)
   logs/               PM2 logs (auto-created, git-ignored)
   .env                secrets (never committed)
   .env.example        template of required keys
@@ -41,6 +69,11 @@ slack-work-logger/
 The only file you normally edit to manage users, timings, and message text is
 `config/users.json`. The scheduler reads it fresh on every run, so user/schedule
 changes take effect **without a restart**.
+
+> **Storage note:** the SQLite database is the source of truth for the dashboard
+> and is written first, so the dashboard works even if Google Sheets is not
+> configured. Google Sheets logging is best-effort: a Sheets failure is logged
+> but never blocks recording the reply or sending the confirmation.
 
 ---
 
@@ -103,7 +136,65 @@ The app converts `\n` back into real newlines at runtime.
 
 ---
 
-## Part 3: VPS Deployment on Hostinger
+## Part 3: Environment variables
+
+Copy `.env.example` to `.env` and fill it in. Full list:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `SLACK_BOT_TOKEN` | yes | Bot token (`xoxb-…`) for sending DMs |
+| `SLACK_APP_TOKEN` | yes | App-level token (`xapp-…`) for Socket Mode |
+| `GOOGLE_SHEET_ID` | optional | Enables Google Sheets mirroring |
+| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | optional | Service account for Sheets |
+| `GOOGLE_PRIVATE_KEY` | optional | Service account key for Sheets |
+| `PORT` | optional | Dashboard port (managed hosts inject this; defaults to `3000`) |
+| `DASHBOARD_USERNAME` | yes | Dashboard login username |
+| `DASHBOARD_PASSWORD` | yes | Dashboard login password — **change it** |
+| `SESSION_SECRET` | recommended | Signs session cookies; use a long random string |
+
+> The Google variables are optional: without them the bot still records every
+> reply to SQLite and the dashboard works fully — it just skips the Sheet.
+
+Generate a strong session secret with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+---
+
+## Part 4: Deploy on Hostinger Business (managed Node.js) — "Plan A"
+
+Hostinger **Business** web hosting can run this because the dashboard is a real
+HTTP server bound to `process.env.PORT`, which is exactly what the managed
+Node.js platform expects (it would otherwise idle out a no-HTTP background
+worker). The Slack Socket Mode connection and cron jobs run inside the same
+process.
+
+1. In **hPanel → Websites → your site → Node.js**, create an application:
+   - **Application root:** the folder you upload the project to.
+   - **Application startup file:** `src/index.js`
+   - **Node.js version:** 22.x
+2. Upload the project (Git deploy or File Manager). Do **not** upload `.env`,
+   `node_modules/`, or `data/`.
+3. Set the environment variables from Part 3 in the Node.js app's
+   **Environment variables** section (don't commit `.env` to the server). Leave
+   `PORT` unset — Hostinger provides it.
+4. Run **NPM Install** from the Node.js panel (or `npm install` over SSH).
+   - `better-sqlite3` ships prebuilt binaries for Linux x64 / Node 22, so this
+     normally needs no compiler. If a build is ever required, ensure build tools
+     are available over SSH and re-run `npm install`.
+5. **Start/Restart** the application from the panel.
+6. Visit your domain and sign in to the dashboard. The bot is live as soon as
+   the process is running.
+
+> Persistence: the SQLite file lives in `data/work-logger.db` inside the app
+> directory, so it survives restarts. Keep it out of any redeploy that wipes the
+> directory (it is git-ignored by default).
+
+---
+
+## Part 5: VPS Deployment on Hostinger
 
 1. SSH into your VPS.
 2. Install Node.js 22 using nvm:
@@ -147,7 +238,7 @@ immediately, run `pm2 restart slack-work-logger`.
 
 ---
 
-## Part 4: Useful PM2 Commands
+## Part 6: Useful PM2 Commands
 
 ```bash
 pm2 logs slack-work-logger     # live logs
@@ -166,7 +257,13 @@ cp .env.example .env   # fill in real values
 npm start
 ```
 
-You should see `Slack Work Logger is running` once it connects.
+You should see `Dashboard listening on port 3000` and then
+`Slack Work Logger is running` once it connects. Open
+<http://localhost:3000> and sign in with your `DASHBOARD_USERNAME` /
+`DASHBOARD_PASSWORD`.
+
+The dashboard starts even if Slack credentials are missing or invalid, so you
+can develop the UI against the local SQLite database independently.
 
 ## Reply parsing examples
 

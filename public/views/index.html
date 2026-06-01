@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Work Logger · Dashboard</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📋</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-logo">📋</span>
+        <span class="brand-name">Work Logger</span>
+      </div>
+      <div class="topbar-actions">
+        <span class="muted" id="today-label"></span>
+        <button class="btn btn-ghost" id="refresh-btn" title="Refresh">↻ Refresh</button>
+        <button class="btn btn-ghost" id="logout-btn">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Summary cards -->
+    <section class="cards" id="cards">
+      <div class="card stat">
+        <div class="stat-label">Replied today</div>
+        <div class="stat-value" id="stat-replied">–</div>
+        <div class="stat-sub" id="stat-replied-sub"></div>
+      </div>
+      <div class="card stat">
+        <div class="stat-label">Awaiting reply</div>
+        <div class="stat-value" id="stat-awaiting">–</div>
+        <div class="stat-sub">today</div>
+      </div>
+      <div class="card stat">
+        <div class="stat-label">Hours (last 7 days)</div>
+        <div class="stat-value" id="stat-hours">–</div>
+        <div class="stat-sub">across the team</div>
+      </div>
+      <div class="card stat">
+        <div class="stat-label">Total entries</div>
+        <div class="stat-value" id="stat-entries">–</div>
+        <div class="stat-sub">all time</div>
+      </div>
+    </section>
+
+    <!-- Tabs -->
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="status" role="tab">Today's Status</button>
+      <button class="tab" data-tab="entries" role="tab">All Entries</button>
+    </nav>
+
+    <!-- Today's status -->
+    <section class="panel active" id="panel-status">
+      <div class="panel-head">
+        <h2>Daily check-in status</h2>
+        <p class="muted">Who has been messaged and who has replied today.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Message sent</th>
+              <th>Replied</th>
+            </tr>
+          </thead>
+          <tbody id="status-body">
+            <tr><td colspan="4" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Entries -->
+    <section class="panel" id="panel-entries">
+      <div class="panel-head">
+        <h2>Logged work entries</h2>
+        <div class="filters">
+          <select id="filter-user" aria-label="Filter by user">
+            <option value="">All users</option>
+          </select>
+          <input type="date" id="filter-from" aria-label="From date" />
+          <input type="date" id="filter-to" aria-label="To date" />
+          <input type="search" id="filter-q" placeholder="Search description…" aria-label="Search" />
+          <button class="btn btn-ghost" id="filter-clear">Clear</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Name</th>
+              <th class="num">Hours</th>
+              <th>Description</th>
+              <th>Raw reply</th>
+              <th>Parsed</th>
+              <th>Logged at</th>
+            </tr>
+          </thead>
+          <tbody id="entries-body">
+            <tr><td colspan="7" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
