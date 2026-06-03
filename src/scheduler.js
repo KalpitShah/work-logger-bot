@@ -71,7 +71,7 @@ async function runDailyCheckin(app) {
         text: checkinMessage,
       });
 
-      dailyLog.markSent(userId, user.name);
+      await dailyLog.markSent(userId, user.name);
       console.log(`Sent daily check-in to ${user.name} (${userId})`);
     } catch (err) {
       console.error(`Failed to send check-in to ${user.name} (${userId}):`, err.message);
@@ -115,7 +115,7 @@ async function runReminder(app) {
   for (const user of config.users || []) {
     const userId = user.slack_user_id;
 
-    if (!dailyLog.isAwaitingReply(userId)) {
+    if (!(await dailyLog.isAwaitingReply(userId))) {
       continue;
     }
 

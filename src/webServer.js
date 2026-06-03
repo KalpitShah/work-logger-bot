@@ -122,11 +122,11 @@ function createWebServer() {
 
   // Today's per-user check-in status, merged with the configured user list so
   // users who have not been messaged yet still appear ("not_sent").
-  app.get('/api/status/today', requireApiAuth, (req, res) => {
+  app.get('/api/status/today', requireApiAuth, async (req, res) => {
     try {
       const date = todayString();
       const config = loadConfig();
-      const rows = db.getStatusForDate(date);
+      const rows = await db.getStatusForDate(date);
       const byId = new Map(rows.map((r) => [r.slack_user_id, r]));
 
       const users = (config.users || []).map((u) => {
@@ -160,10 +160,10 @@ function createWebServer() {
   });
 
   // Logged work entries, with optional filters.
-  app.get('/api/entries', requireApiAuth, (req, res) => {
+  app.get('/api/entries', requireApiAuth, async (req, res) => {
     try {
       const { user, from, to, q, limit } = req.query;
-      const entries = db.getEntries({
+      const entries = await db.getEntries({
         userId: user || undefined,
         from: from || undefined,
         to: to || undefined,
@@ -177,15 +177,18 @@ function createWebServer() {
   });
 
   // Summary cards.
-  app.get('/api/summary', requireApiAuth, (req, res) => {
+  app.get('/api/summary', requireApiAuth, async (req, res) => {
     try {
       const date = todayString();
       const config = loadConfig();
       const totalUsers = (config.users || []).length;
-      const todayRows = db.getStatusForDate(date);
+      const todayRows = await db.getStatusForDate(date);
 
       const repliedToday = todayRows.filter((r) => r.status === 'replied').length;
       const awaitingToday = todayRows.filter((r) => r.status === 'awaiting_reply').length;
+
+      const totalEntries = await db.countEntries();
+      const hoursLast7Days = Math.round((await db.sumHoursSince(dateNDaysAgo(6))) * 100) / 100;
 
       res.json({
         date,
@@ -193,8 +196,8 @@ function createWebServer() {
         repliedToday,
         awaitingToday,
         sentToday: todayRows.length,
-        totalEntries: db.countEntries(),
-        hoursLast7Days: Math.round(db.sumHoursSince(dateNDaysAgo(6)) * 100) / 100,
+        totalEntries,
+        hoursLast7Days,
       });
     } catch (err) {
       res.status(500).json({ error: err.message });

@@ -2,7 +2,7 @@
 
 A production-ready Node.js bot that DMs your team a daily check-in over Slack,
 listens for their replies via **Socket Mode** (no public webhook needed), parses
-the hours worked and a description, stores everything in a **SQLite** database
+the hours worked and a description, stores everything in a **MySQL** database
 (and optionally a **Google Sheet**), and shows it all in an authenticated
 **web dashboard**.
 
@@ -17,7 +17,7 @@ platform expects).
 2. The bot connects to Slack over an outbound WebSocket (Socket Mode), so no
    public inbound webhook is required.
 3. When a configured user replies in their DM, the reply is parsed and stored in
-   a local **SQLite** database (and appended to your Google Sheet if configured).
+   a **MySQL** database (and appended to your Google Sheet if configured).
 4. An optional reminder job nudges anyone who hasn't replied yet.
 5. A built-in **web dashboard** (password-protected) shows today's check-in
    status (sent / awaiting / replied) and a searchable table of all logged
@@ -49,16 +49,14 @@ slack-work-logger/
     slackHandler.js   handles incoming DM replies via Bolt
     sheetsLogger.js   best-effort append of rows to the Google Sheet
     parser.js         extracts hours + description from free-text replies
-    dailyLog.js       per-user daily check-in status (backed by SQLite)
-    db.js             SQLite (better-sqlite3) schema + queries
+    dailyLog.js       per-user daily check-in status (backed by MySQL)
+    db.js             MySQL (mysql2) schema + queries
     config.js         shared config + timezone-aware date helpers
   public/
     views/            login.html, index.html (dashboard)
     assets/           styles.css, app.js, login.js
   config/
     users.json        users, schedule, reminder, and message text
-  data/
-    work-logger.db    SQLite database (auto-created, git-ignored)
   logs/               PM2 logs (auto-created, git-ignored)
   .env                secrets (never committed)
   .env.example        template of required keys
@@ -70,7 +68,7 @@ The only file you normally edit to manage users, timings, and message text is
 `config/users.json`. The scheduler reads it fresh on every run, so user/schedule
 changes take effect **without a restart**.
 
-> **Storage note:** the SQLite database is the source of truth for the dashboard
+> **Storage note:** the MySQL database is the source of truth for the dashboard
 > and is written first, so the dashboard works even if Google Sheets is not
 > configured. Google Sheets logging is best-effort: a Sheets failure is logged
 > but never blocks recording the reply or sending the confirmation.
@@ -144,6 +142,12 @@ Copy `.env.example` to `.env` and fill it in. Full list:
 | --- | --- | --- |
 | `SLACK_BOT_TOKEN` | yes | Bot token (`xoxb-…`) for sending DMs |
 | `SLACK_APP_TOKEN` | yes | App-level token (`xapp-…`) for Socket Mode |
+| `MYSQL_HOST` | yes | MySQL host |
+| `MYSQL_PORT` | optional | MySQL port (defaults to `3306`) |
+| `MYSQL_USER` | yes | MySQL user |
+| `MYSQL_PASSWORD` | yes | MySQL password |
+| `MYSQL_DATABASE` | yes | MySQL database name (must already exist) |
+| `MYSQL_SSL` | optional | Set to `true` if the provider requires TLS |
 | `GOOGLE_SHEET_ID` | optional | Enables Google Sheets mirroring |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | optional | Service account for Sheets |
 | `GOOGLE_PRIVATE_KEY` | optional | Service account key for Sheets |
@@ -153,7 +157,10 @@ Copy `.env.example` to `.env` and fill it in. Full list:
 | `SESSION_SECRET` | recommended | Signs session cookies; use a long random string |
 
 > The Google variables are optional: without them the bot still records every
-> reply to SQLite and the dashboard works fully — it just skips the Sheet.
+> reply to MySQL and the dashboard works fully — it just skips the Sheet.
+>
+> The database (named by `MYSQL_DATABASE`) must exist before first run; the app
+> creates the `daily_status` and `entries` tables automatically.
 
 Generate a strong session secret with:
 
@@ -175,22 +182,22 @@ process.
    - **Application root:** the folder you upload the project to.
    - **Application startup file:** `src/index.js`
    - **Node.js version:** 22.x
-2. Upload the project (Git deploy or File Manager). Do **not** upload `.env`,
-   `node_modules/`, or `data/`.
+2. Upload the project (Git deploy or File Manager). Do **not** upload `.env`
+   or `node_modules/`.
 3. Set the environment variables from Part 3 in the Node.js app's
    **Environment variables** section (don't commit `.env` to the server). Leave
-   `PORT` unset — Hostinger provides it.
+   `PORT` unset — Hostinger provides it. Point the `MYSQL_*` variables at your
+   managed MySQL instance.
 4. Run **NPM Install** from the Node.js panel (or `npm install` over SSH).
-   - `better-sqlite3` ships prebuilt binaries for Linux x64 / Node 22, so this
-     normally needs no compiler. If a build is ever required, ensure build tools
-     are available over SSH and re-run `npm install`.
+   - `mysql2` is pure JavaScript with no native build step, so this needs no
+     compiler on any platform.
 5. **Start/Restart** the application from the panel.
 6. Visit your domain and sign in to the dashboard. The bot is live as soon as
    the process is running.
 
-> Persistence: the SQLite file lives in `data/work-logger.db` inside the app
-> directory, so it survives restarts. Keep it out of any redeploy that wipes the
-> directory (it is git-ignored by default).
+> Persistence: data lives in your MySQL server, not on the app's local disk, so
+> it survives restarts and redeploys regardless of whether the app directory is
+> wiped. Make sure the `MYSQL_*` credentials point at a durable database.
 
 ---
 
@@ -263,7 +270,7 @@ You should see `Dashboard listening on port 3000` and then
 `DASHBOARD_PASSWORD`.
 
 The dashboard starts even if Slack credentials are missing or invalid, so you
-can develop the UI against the local SQLite database independently.
+can develop the UI against the MySQL database independently.
 
 ## Reply parsing examples
 

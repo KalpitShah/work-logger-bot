@@ -1,168 +1,193 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const Database = require('better-sqlite3');
+const mysql = require('mysql2/promise');
 
-const DATA_DIR = path.join(__dirname, '../data');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+/**
+ * MySQL-backed storage. Connection details come from the environment so the
+ * same code runs locally and on managed hosting. All public helpers are async
+ * (mysql2 is promise-based, unlike the previous synchronous better-sqlite3).
+ */
+const pool = mysql.createPool({
+  host: process.env.MYSQL_HOST || '127.0.0.1',
+  port: Number(process.env.MYSQL_PORT) || 3306,
+  user: process.env.MYSQL_USER || 'root',
+  password: process.env.MYSQL_PASSWORD || '',
+  database: process.env.MYSQL_DATABASE || 'work_logger',
+  waitForConnections: true,
+  connectionLimit: Number(process.env.MYSQL_POOL_SIZE) || 10,
+  // Lets us keep the original `@name` style as `:name` placeholders.
+  namedPlaceholders: true,
+  // Enable TLS for managed providers that require it (e.g. PlanetScale, Aiven).
+  ssl: process.env.MYSQL_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
+});
+
+// --- Schema --------------------------------------------------------------
+
+// MySQL can't run multiple statements per query() without multipleStatements,
+// so each DDL runs separately. The init promise is cached: every public helper
+// awaits ready() so the tables exist before the first query, regardless of
+// which entry point (bot, scheduler, or dashboard) runs first.
+let initPromise = null;
+
+async function init() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS daily_status (
+      date          VARCHAR(10)  NOT NULL,
+      slack_user_id VARCHAR(64)  NOT NULL,
+      name          VARCHAR(255),
+      status        VARCHAR(32)  NOT NULL,
+      sent_at       VARCHAR(40),
+      replied_at    VARCHAR(40),
+      PRIMARY KEY (date, slack_user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS entries (
+      id            INT AUTO_INCREMENT PRIMARY KEY,
+      date          VARCHAR(10)  NOT NULL,
+      slack_user_id VARCHAR(64)  NOT NULL,
+      name          VARCHAR(255),
+      hours         DOUBLE,
+      description   TEXT,
+      raw_reply     TEXT,
+      parsed        TINYINT      NOT NULL DEFAULT 0,
+      logged_at     VARCHAR(40)  NOT NULL,
+      INDEX idx_entries_date (date),
+      INDEX idx_entries_user (slack_user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
 }
 
-const DB_PATH = path.join(DATA_DIR, 'work-logger.db');
-
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS daily_status (
-    date          TEXT NOT NULL,
-    slack_user_id TEXT NOT NULL,
-    name          TEXT,
-    status        TEXT NOT NULL,
-    sent_at       TEXT,
-    replied_at    TEXT,
-    PRIMARY KEY (date, slack_user_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS entries (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    date          TEXT NOT NULL,
-    slack_user_id TEXT NOT NULL,
-    name          TEXT,
-    hours         REAL,
-    description   TEXT,
-    raw_reply     TEXT,
-    parsed        INTEGER NOT NULL DEFAULT 0,
-    logged_at     TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
-  CREATE INDEX IF NOT EXISTS idx_entries_user ON entries(slack_user_id);
-`);
-
-// --- Prepared statements -------------------------------------------------
-
-const stmtUpsertSent = db.prepare(`
-  INSERT INTO daily_status (date, slack_user_id, name, status, sent_at)
-  VALUES (@date, @slack_user_id, @name, 'awaiting_reply', @sent_at)
-  ON CONFLICT(date, slack_user_id) DO UPDATE SET
-    name    = excluded.name,
-    status  = 'awaiting_reply',
-    sent_at = excluded.sent_at
-`);
-
-const stmtMarkReplied = db.prepare(`
-  UPDATE daily_status
-  SET status = 'replied', replied_at = @replied_at
-  WHERE date = @date AND slack_user_id = @slack_user_id
-`);
-
-const stmtGetStatus = db.prepare(`
-  SELECT status FROM daily_status WHERE date = @date AND slack_user_id = @slack_user_id
-`);
-
-const stmtGetStatusForDate = db.prepare(`
-  SELECT date, slack_user_id, name, status, sent_at, replied_at
-  FROM daily_status WHERE date = @date
-`);
-
-const stmtInsertEntry = db.prepare(`
-  INSERT INTO entries (date, slack_user_id, name, hours, description, raw_reply, parsed, logged_at)
-  VALUES (@date, @slack_user_id, @name, @hours, @description, @raw_reply, @parsed, @logged_at)
-`);
-
-const stmtCountEntries = db.prepare(`SELECT COUNT(*) AS n FROM entries`);
-
-const stmtHoursSince = db.prepare(`
-  SELECT COALESCE(SUM(hours), 0) AS total FROM entries WHERE date >= @from
-`);
+function ready() {
+  if (!initPromise) initPromise = init();
+  return initPromise;
+}
 
 // --- Public helpers ------------------------------------------------------
 
-function markSent({ date, slackUserId, name, sentAt }) {
-  stmtUpsertSent.run({
-    date,
-    slack_user_id: slackUserId,
-    name: name || null,
-    sent_at: sentAt,
-  });
+async function markSent({ date, slackUserId, name, sentAt }) {
+  await ready();
+  await pool.query(
+    `INSERT INTO daily_status (date, slack_user_id, name, status, sent_at)
+     VALUES (:date, :slack_user_id, :name, 'awaiting_reply', :sent_at)
+     ON DUPLICATE KEY UPDATE
+       name    = VALUES(name),
+       status  = 'awaiting_reply',
+       sent_at = VALUES(sent_at)`,
+    { date, slack_user_id: slackUserId, name: name || null, sent_at: sentAt }
+  );
 }
 
-function markReplied({ date, slackUserId, repliedAt }) {
-  stmtMarkReplied.run({ date, slack_user_id: slackUserId, replied_at: repliedAt });
+async function markReplied({ date, slackUserId, repliedAt }) {
+  await ready();
+  await pool.query(
+    `UPDATE daily_status
+     SET status = 'replied', replied_at = :replied_at
+     WHERE date = :date AND slack_user_id = :slack_user_id`,
+    { date, slack_user_id: slackUserId, replied_at: repliedAt }
+  );
 }
 
-function getStatus({ date, slackUserId }) {
-  const row = stmtGetStatus.get({ date, slack_user_id: slackUserId });
-  return row ? row.status : null;
+async function getStatus({ date, slackUserId }) {
+  await ready();
+  const [rows] = await pool.query(
+    `SELECT status FROM daily_status WHERE date = :date AND slack_user_id = :slack_user_id`,
+    { date, slack_user_id: slackUserId }
+  );
+  return rows.length ? rows[0].status : null;
 }
 
-function getStatusForDate(date) {
-  return stmtGetStatusForDate.all({ date });
+async function getStatusForDate(date) {
+  await ready();
+  const [rows] = await pool.query(
+    `SELECT date, slack_user_id, name, status, sent_at, replied_at
+     FROM daily_status WHERE date = :date`,
+    { date }
+  );
+  return rows;
 }
 
-function insertEntry(entry) {
-  stmtInsertEntry.run({
-    date: entry.date,
-    slack_user_id: entry.slack_user_id,
-    name: entry.name || null,
-    hours: entry.hours === null || entry.hours === undefined ? null : entry.hours,
-    description: entry.description || '',
-    raw_reply: entry.raw_reply || '',
-    parsed: entry.parsed ? 1 : 0,
-    logged_at: entry.logged_at,
-  });
+async function insertEntry(entry) {
+  await ready();
+  await pool.query(
+    `INSERT INTO entries (date, slack_user_id, name, hours, description, raw_reply, parsed, logged_at)
+     VALUES (:date, :slack_user_id, :name, :hours, :description, :raw_reply, :parsed, :logged_at)`,
+    {
+      date: entry.date,
+      slack_user_id: entry.slack_user_id,
+      name: entry.name || null,
+      hours: entry.hours === null || entry.hours === undefined ? null : entry.hours,
+      description: entry.description || '',
+      raw_reply: entry.raw_reply || '',
+      parsed: entry.parsed ? 1 : 0,
+      logged_at: entry.logged_at,
+    }
+  );
 }
 
 /**
  * Returns entries with optional filtering. Filters: userId, from (date),
  * to (date), q (search in description/raw_reply). Newest first.
+ *
+ * logged_at is stored as an ISO 8601 string, so lexicographic ordering matches
+ * chronological ordering — no datetime() coercion needed (and MySQL has none).
  */
-function getEntries({ userId, from, to, q, limit = 1000 } = {}) {
+async function getEntries({ userId, from, to, q, limit = 1000 } = {}) {
+  await ready();
   const clauses = [];
   const params = {};
 
   if (userId) {
-    clauses.push('slack_user_id = @userId');
+    clauses.push('slack_user_id = :userId');
     params.userId = userId;
   }
   if (from) {
-    clauses.push('date >= @from');
+    clauses.push('date >= :from');
     params.from = from;
   }
   if (to) {
-    clauses.push('date <= @to');
+    clauses.push('date <= :to');
     params.to = to;
   }
   if (q) {
-    clauses.push('(description LIKE @q OR raw_reply LIKE @q)');
+    clauses.push('(description LIKE :q OR raw_reply LIKE :q)');
     params.q = `%${q}%`;
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  params.limit = Math.min(Number(limit) || 1000, 5000);
+  // Inlined as a sanitized integer: MySQL placeholders in LIMIT are finicky.
+  const lim = Math.min(Number(limit) || 1000, 5000);
 
   const sql = `
     SELECT id, date, slack_user_id, name, hours, description, raw_reply, parsed, logged_at
     FROM entries
     ${where}
-    ORDER BY datetime(logged_at) DESC, id DESC
-    LIMIT @limit
+    ORDER BY logged_at DESC, id DESC
+    LIMIT ${lim}
   `;
-  return db.prepare(sql).all(params);
+  const [rows] = await pool.query(sql, params);
+  return rows;
 }
 
-function countEntries() {
-  return stmtCountEntries.get().n;
+async function countEntries() {
+  await ready();
+  const [rows] = await pool.query(`SELECT COUNT(*) AS n FROM entries`);
+  return rows[0].n;
 }
 
-function sumHoursSince(fromDate) {
-  return stmtHoursSince.get({ from: fromDate }).total || 0;
+async function sumHoursSince(fromDate) {
+  await ready();
+  const [rows] = await pool.query(
+    `SELECT COALESCE(SUM(hours), 0) AS total FROM entries WHERE date >= :from`,
+    { from: fromDate }
+  );
+  return rows[0].total || 0;
 }
 
 module.exports = {
-  db,
+  pool,
+  ready,
   markSent,
   markReplied,
   getStatus,

@@ -46,7 +46,7 @@ function registerHandlers(app) {
       }
 
       // 5 & 6. Only log if this user is awaiting a reply today.
-      if (!dailyLog.isAwaitingReply(message.user)) {
+      if (!(await dailyLog.isAwaitingReply(message.user))) {
         return;
       }
 
@@ -65,12 +65,12 @@ function registerHandlers(app) {
         logged_at: new Date().toISOString(),
       };
 
-      // 8a. Persist to the local SQLite DB first so the dashboard always has
-      //     the record, regardless of Google Sheets configuration.
+      // 8a. Persist to the MySQL DB first so the dashboard always has the
+      //     record, regardless of Google Sheets configuration.
       try {
-        db.insertEntry(entry);
+        await db.insertEntry(entry);
       } catch (dbErr) {
-        console.error('Failed to write entry to SQLite:', dbErr.message);
+        console.error('Failed to write entry to MySQL:', dbErr.message);
         console.error('Unsaved entry:', JSON.stringify(entry));
       }
 
@@ -83,7 +83,7 @@ function registerHandlers(app) {
       }
 
       // 9. Mark the user as having replied.
-      dailyLog.markReplied(message.user);
+      await dailyLog.markReplied(message.user);
 
       // 10. Send a confirmation DM if configured.
       const confirmationText =

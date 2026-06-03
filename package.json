@@ -1,7 +1,7 @@
 {
   "name": "slack-work-logger",
   "version": "1.0.0",
-  "description": "Daily work logger Slack bot with a SQLite-backed web dashboard. DMs users, parses replies via Socket Mode, logs hours to SQLite + Google Sheets, and shows everything in an authenticated dashboard.",
+  "description": "Daily work logger Slack bot with a MySQL-backed web dashboard. DMs users, parses replies via Socket Mode, logs hours to MySQL + Google Sheets, and shows everything in an authenticated dashboard.",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
@@ -13,11 +13,11 @@
   "dependencies": {
     "@slack/bolt": "^4.7.3",
     "@slack/socket-mode": "^2.0.4",
-    "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
     "googleapis": "^144.0.0",
+    "mysql2": "^3.22.4",
     "node-cron": "^4.2.1"
   }
 }

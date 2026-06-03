@@ -11,10 +11,10 @@ const { startScheduler } = require('./scheduler');
 const { startWebServer } = require('./webServer');
 
 /**
- * Creates runtime directories (data/, logs/) if they do not exist.
+ * Creates runtime directories (logs/) if they do not exist.
  */
 function ensureRuntimeDirs() {
-  for (const dir of ['../data', '../logs']) {
+  for (const dir of ['../logs']) {
     const full = path.join(__dirname, dir);
     if (!fs.existsSync(full)) {
       fs.mkdirSync(full, { recursive: true });

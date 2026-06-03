@@ -4,7 +4,7 @@ const db = require('./db');
 const { todayString } = require('./config');
 
 /**
- * Tracks per-user daily check-in state, backed by SQLite (table: daily_status).
+ * Tracks per-user daily check-in state, backed by MySQL (table: daily_status).
  * The same database powers the web dashboard, so the bot and UI stay in sync.
  */
 
@@ -13,8 +13,8 @@ const { todayString } = require('./config');
  * @param {string} userId
  * @param {string} [name]
  */
-function markSent(userId, name) {
-  db.markSent({
+async function markSent(userId, name) {
+  await db.markSent({
     date: todayString(),
     slackUserId: userId,
     name,
@@ -26,8 +26,8 @@ function markSent(userId, name) {
  * Marks a user as having replied to today's check-in.
  * @param {string} userId
  */
-function markReplied(userId) {
-  db.markReplied({
+async function markReplied(userId) {
+  await db.markReplied({
     date: todayString(),
     slackUserId: userId,
     repliedAt: new Date().toISOString(),
@@ -37,15 +37,15 @@ function markReplied(userId) {
 /**
  * Returns true if the user was messaged today and has not yet replied.
  */
-function isAwaitingReply(userId) {
-  return db.getStatus({ date: todayString(), slackUserId: userId }) === 'awaiting_reply';
+async function isAwaitingReply(userId) {
+  return (await db.getStatus({ date: todayString(), slackUserId: userId })) === 'awaiting_reply';
 }
 
 /**
  * Returns true if the user has already replied today.
  */
-function hasReplied(userId) {
-  return db.getStatus({ date: todayString(), slackUserId: userId }) === 'replied';
+async function hasReplied(userId) {
+  return (await db.getStatus({ date: todayString(), slackUserId: userId })) === 'replied';
 }
 
 /**

@@ -1,18 +1,17 @@
 {
   "users": [
-    { "slack_user_id": "UXXXXXXXX", "name": "Alice" },
-    { "slack_user_id": "UYYYYYYYY", "name": "Bob" }
+    { "slack_user_id": "U0AGA8AS1B2", "name": "Kalpit" }
   ],
   "schedule": {
-    "send_time_hour": 18,
-    "send_time_minute": 0,
+    "send_time_hour": 17,
+    "send_time_minute": 53,
     "timezone": "Asia/Kolkata",
-    "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
   },
   "reminder": {
     "enabled": true,
-    "reminder_hour": 21,
-    "reminder_minute": 0
+    "reminder_hour": 17,
+    "reminder_minute": 55
   },
   "messages": {
     "checkin": "Hey! Quick daily check-in.\n\nPlease reply with:\n1. How many hours did you work today?\n2. What did you work on?\n\nYou can reply in one message or keep it simple, whatever works!",
