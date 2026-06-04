@@ -185,6 +185,34 @@ async function sumHoursSince(fromDate) {
   return rows[0].total || 0;
 }
 
+/**
+ * Returns total hours logged per (date, user) within an optional date range,
+ * for building the per-employee daily hours matrix. One row per day a user
+ * logged at least one entry; multiple entries on the same day are summed.
+ */
+async function getDailyHoursByUser({ from, to } = {}) {
+  await ready();
+  const clauses = ['hours IS NOT NULL'];
+  const params = {};
+  if (from) {
+    clauses.push('date >= :from');
+    params.from = from;
+  }
+  if (to) {
+    clauses.push('date <= :to');
+    params.to = to;
+  }
+  const where = `WHERE ${clauses.join(' AND ')}`;
+  const [rows] = await pool.query(
+    `SELECT date, slack_user_id, MAX(name) AS name, COALESCE(SUM(hours), 0) AS hours
+     FROM entries
+     ${where}
+     GROUP BY date, slack_user_id`,
+    params
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   ready,
@@ -196,4 +224,5 @@ module.exports = {
   getEntries,
   countEntries,
   sumHoursSince,
+  getDailyHoursByUser,
 };

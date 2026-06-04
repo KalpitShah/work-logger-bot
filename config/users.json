@@ -1,10 +1,10 @@
 {
   "users": [
-    { "slack_user_id": "U0AGA8AS1B2", "name": "Kalpit" }
+    { "slack_user_id": "U0AGA8AS1B2A", "name": "Kalpit2" }
   ],
   "schedule": {
-    "send_time_hour": 17,
-    "send_time_minute": 53,
+    "send_time_hour": 18,
+    "send_time_minute": 21,
     "timezone": "Asia/Kolkata",
     "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
   },
@@ -14,8 +14,9 @@
     "reminder_minute": 55
   },
   "messages": {
-    "checkin": "Hey! Quick daily check-in.\n\nPlease reply with:\n1. How many hours did you work today?\n2. What did you work on?\n\nYou can reply in one message or keep it simple, whatever works!",
+    "checkin": "Hey! Quick daily check-in.\n\nPlease reply with your hours and what you worked on, separated by a `|`:\n\n*hours* `|` *what you worked on*\n\nFor example:\n• `6 hours | dashboard redesign`\n• `6h | fixed login bug`\n• `half day | code review`",
     "reminder": "Hey, just a reminder to send in your daily update when you get a chance!",
-    "confirmation": "Thanks! Your update has been logged."
+    "confirmation": "Thanks! Your update has been logged.",
+    "format_help": "I couldn't read that. Please use *hours* `|` *what you worked on*.\n\nFor example:\n• `6 hours | dashboard redesign`\n• `6h | fixed login bug`\n• `half day | code review`"
   }
 }

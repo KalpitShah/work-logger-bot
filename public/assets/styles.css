@@ -232,6 +232,25 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600
 .cell-desc { max-width: 360px; }
 .cell-raw { max-width: 280px; color: var(--muted); font-size: 13px; }
 
+/* ---------- Hours matrix ---------- */
+#matrix-head { margin-top: 32px; }
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+td.cell-day { white-space: nowrap; font-weight: 600; }
+#matrix-table tfoot td {
+  padding: 13px 16px;
+  font-weight: 700;
+  background: #fafbfe;
+  border-top: 2px solid var(--border);
+}
+#matrix-table tfoot td.num { font-variant-numeric: tabular-nums; }
+
 /* ---------- Badges ---------- */
 .badge {
   display: inline-block;

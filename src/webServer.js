@@ -38,6 +38,101 @@ function dateNDaysAgo(n) {
   }).format(d);
 }
 
+/**
+ * Returns the list of YYYY-MM-DD strings from `from` to `to` inclusive, newest
+ * first. Stepping in UTC keeps the arithmetic free of DST/timezone drift since
+ * the stored dates are plain calendar days.
+ */
+function datesDescending(from, to) {
+  const out = [];
+  const start = new Date(from + 'T00:00:00Z');
+  const cur = new Date(to + 'T00:00:00Z');
+  let guard = 0;
+  while (cur >= start && guard < 1000) {
+    out.push(cur.toISOString().slice(0, 10));
+    cur.setUTCDate(cur.getUTCDate() - 1);
+    guard += 1;
+  }
+  return out;
+}
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+/**
+ * Builds a per-employee daily hours matrix for a date range. Columns are the
+ * configured users (in config order), followed by any extra users that appear
+ * in the data but are no longer configured. Every day in the range is a row,
+ * even days with zero logged hours.
+ *
+ * @returns {Promise<{from: string, to: string, users: Array<{slack_user_id: string, name: string}>, rows: Array<{date: string, cells: Object, total: number}>, totals: Object, grandTotal: number}>}
+ */
+async function computeHoursMatrix({ from, to }) {
+  const config = loadConfig();
+  const users = (config.users || []).map((u) => ({
+    slack_user_id: u.slack_user_id,
+    name: u.name,
+  }));
+
+  const dataRows = await db.getDailyHoursByUser({ from, to });
+
+  // Append users present in the data but missing from config.
+  const seen = new Set(users.map((u) => u.slack_user_id));
+  for (const r of dataRows) {
+    if (!seen.has(r.slack_user_id)) {
+      seen.add(r.slack_user_id);
+      users.push({ slack_user_id: r.slack_user_id, name: r.name || r.slack_user_id });
+    }
+  }
+
+  const cell = new Map();
+  for (const r of dataRows) {
+    cell.set(r.date + '|' + r.slack_user_id, Number(r.hours) || 0);
+  }
+
+  const totals = {};
+  for (const u of users) totals[u.slack_user_id] = 0;
+  let grandTotal = 0;
+
+  const rows = datesDescending(from, to).map((date) => {
+    const cells = {};
+    let total = 0;
+    for (const u of users) {
+      const h = cell.get(date + '|' + u.slack_user_id) || 0;
+      cells[u.slack_user_id] = round2(h);
+      totals[u.slack_user_id] += h;
+      total += h;
+    }
+    grandTotal += total;
+    return { date, cells, total: round2(total) };
+  });
+
+  for (const u of users) totals[u.slack_user_id] = round2(totals[u.slack_user_id]);
+
+  return { from, to, users, rows, totals, grandTotal: round2(grandTotal) };
+}
+
+/**
+ * Resolves the {from, to} range from query params, defaulting to the last
+ * `days` (default 30) ending today in the configured timezone.
+ */
+function resolveRange(query) {
+  const days = Math.min(Math.max(Number(query.days) || 30, 1), 366);
+  const to = query.to || todayString();
+  const from = query.from || dateNDaysAgo(days - 1);
+  return { from, to };
+}
+
+/**
+ * Escapes a value for a CSV cell, quoting when it contains a comma, quote, or
+ * newline (RFC 4180).
+ */
+function csvCell(value) {
+  const s = value === null || value === undefined ? '' : String(value);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
 function requireAuth(req, res, next) {
   if (req.session && req.session.authed) return next();
   return res.redirect('/login');
@@ -199,6 +294,45 @@ function createWebServer() {
         totalEntries,
         hoursLast7Days,
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Per-employee daily hours matrix (default: last 30 days, newest first).
+  app.get('/api/hours-matrix', requireApiAuth, async (req, res) => {
+    try {
+      const { from, to } = resolveRange(req.query);
+      const matrix = await computeHoursMatrix({ from, to });
+      res.json(matrix);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // CSV export of the hours matrix for a selected date range.
+  app.get('/api/export.csv', requireApiAuth, async (req, res) => {
+    try {
+      const { from, to } = resolveRange(req.query);
+      const { users, rows, totals, grandTotal } = await computeHoursMatrix({ from, to });
+
+      const header = ['Date', ...users.map((u) => u.name), 'Total'];
+      const lines = [header.map(csvCell).join(',')];
+      for (const r of rows) {
+        const line = [r.date, ...users.map((u) => r.cells[u.slack_user_id] || 0), r.total];
+        lines.push(line.map(csvCell).join(','));
+      }
+      const totalLine = ['Total', ...users.map((u) => totals[u.slack_user_id] || 0), grandTotal];
+      lines.push(totalLine.map(csvCell).join(','));
+
+      // Prepend a BOM so Excel opens UTF-8 cleanly.
+      const csv = '﻿' + lines.join('\r\n') + '\r\n';
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="work-hours_${from}_to_${to}.csv"`
+      );
+      res.send(csv);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

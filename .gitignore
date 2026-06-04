@@ -5,3 +5,4 @@ logs/
 credentials/
 *.log
 .DS_Store
+.claude/

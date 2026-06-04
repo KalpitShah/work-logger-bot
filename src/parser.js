@@ -1,8 +1,15 @@
 'use strict';
 
 /**
+ * The required separator between the hours and the description, e.g.
+ * "6 hours | dashboard redesign".
+ */
+const SEPARATOR = '|';
+
+/**
  * Phrases that strongly indicate no work was done. When matched, hours is set
- * to 0 and the full text is used as the description.
+ * to 0 and the full text is used as the description. These are accepted even
+ * without the "|" separator, since there is nothing to separate.
  */
 const NO_WORK_PATTERNS = [
   /\bdidn'?t\s+work\b/i,
@@ -30,58 +37,37 @@ const PREFIX_PATTERNS = [
 ];
 
 /**
- * Attempts to extract a number of hours from free text.
- * Returns { hours, matchRange } where matchRange is [start, end) of the
- * substring consumed (so it can be removed from the description), or null.
+ * Parses the hours portion (the text before the separator). Accepts:
+ *   "6", "6h", "6 h", "6hr", "6 hrs", "6 hour", "6 hours", "6.5 hours",
+ *   "~6", "about 6 hours", "half day", "full day".
+ *
+ * Returns a number, or null if no valid hours value could be found.
  */
-function extractHours(text) {
-  // 1. Word-based shortcuts.
-  if (/\bhalf\s*day\b/i.test(text)) {
-    const m = text.match(/\bhalf\s*day\b/i);
-    return { hours: 4, matchRange: [m.index, m.index + m[0].length] };
+function parseHours(text) {
+  const t = text.trim();
+
+  if (/\bhalf\s*day\b/i.test(t)) {
+    return 4;
   }
-  if (/\bfull\s*day\b/i.test(text)) {
-    const m = text.match(/\bfull\s*day\b/i);
-    return { hours: 8, matchRange: [m.index, m.index + m[0].length] };
+  if (/\bfull\s*day\b/i.test(t)) {
+    return 8;
   }
 
-  // 2. Numeric patterns with an explicit hours unit, e.g. "6.5 hours", "6hrs",
-  //    "6h". Ranges like "6-7 hours" take the first number.
-  const unitRegex = /(~|about\s+|approx\.?\s+|around\s+)?(\d+(?:\.\d+)?)\s*(?:-\s*\d+(?:\.\d+)?\s*)?(?:hours?|hrs?|h)\b/i;
-  const unitMatch = text.match(unitRegex);
-  if (unitMatch) {
-    return {
-      hours: parseFloat(unitMatch[2]),
-      matchRange: [unitMatch.index, unitMatch.index + unitMatch[0].length],
-    };
-  }
-
-  // 3. Approximate numbers without a unit, e.g. "~6", "about 6", "around 6".
-  const approxRegex = /(~|about\s+|approx\.?\s+|around\s+)(\d+(?:\.\d+)?)/i;
-  const approxMatch = text.match(approxRegex);
-  if (approxMatch) {
-    return {
-      hours: parseFloat(approxMatch[2]),
-      matchRange: [approxMatch.index, approxMatch.index + approxMatch[0].length],
-    };
-  }
-
-  // 4. A bare leading number, e.g. "6, dashboard work" or "6 dashboard redesign".
-  const leadingRegex = /^\s*(\d+(?:\.\d+)?)\b/;
-  const leadingMatch = text.match(leadingRegex);
-  if (leadingMatch) {
-    return {
-      hours: parseFloat(leadingMatch[1]),
-      matchRange: [leadingMatch.index, leadingMatch.index + leadingMatch[0].length],
-    };
+  // A number, optionally preceded by an approximation word and optionally
+  // followed by an hours unit. The unit is optional so a bare "6" works.
+  const m = t.match(
+    /^(?:~|about\s+|approx\.?\s+|around\s+)?(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)?\.?$/i
+  );
+  if (m) {
+    return parseFloat(m[1]);
   }
 
   return null;
 }
 
 /**
- * Removes leftover separator punctuation and stray "hours" wording, then strips
- * common prefix words from the description.
+ * Removes leftover separator punctuation, then strips common prefix words from
+ * the description.
  */
 function cleanDescription(text) {
   let desc = text;
@@ -106,42 +92,50 @@ function cleanDescription(text) {
 /**
  * Parses a free-text reply into structured hours + description.
  *
+ * Replies must use the format "<hours> | <description>", e.g.
+ * "6 hours | dashboard redesign". The hours portion accepts several spellings
+ * (6, 6h, 6 hour, 6 hours, half day, full day).
+ *
+ * "No work" replies (e.g. "day off") are accepted without the separator and
+ * recorded as 0 hours.
+ *
  * @param {string} text
- * @returns {{ hours: number|null, description: string, raw: string, parsed: boolean }}
+ * @returns {{ hours: number|null, description: string, raw: string,
+ *   parsed: boolean, needsFormatHelp: boolean }}
  */
 function parseReply(text) {
   const raw = typeof text === 'string' ? text : '';
   const trimmed = raw.trim();
 
   if (!trimmed) {
-    return { hours: null, description: '', raw, parsed: false };
+    return { hours: null, description: '', raw, parsed: false, needsFormatHelp: true };
   }
 
   // "Didn't work" style replies → 0 hours, full text as description.
   for (const pattern of NO_WORK_PATTERNS) {
     if (pattern.test(trimmed)) {
-      return { hours: 0, description: trimmed, raw, parsed: true };
+      return { hours: 0, description: trimmed, raw, parsed: true, needsFormatHelp: false };
     }
   }
 
-  const hoursResult = extractHours(trimmed);
-
-  if (!hoursResult) {
-    // Could not determine hours — keep the text as description for context.
-    return { hours: null, description: trimmed, raw, parsed: false };
+  // The separator is required for normal replies.
+  const sepIndex = trimmed.indexOf(SEPARATOR);
+  if (sepIndex === -1) {
+    return { hours: null, description: '', raw, parsed: false, needsFormatHelp: true };
   }
 
-  // Remove the consumed hours substring to build the description.
-  const [start, end] = hoursResult.matchRange;
-  const remainder = (trimmed.slice(0, start) + ' ' + trimmed.slice(end)).trim();
-  const description = cleanDescription(remainder);
+  const hoursPart = trimmed.slice(0, sepIndex);
+  const descPart = trimmed.slice(sepIndex + SEPARATOR.length);
 
-  return {
-    hours: hoursResult.hours,
-    description,
-    raw,
-    parsed: true,
-  };
+  const hours = parseHours(hoursPart);
+  if (hours === null) {
+    // Separator present but the hours portion wasn't understood.
+    return { hours: null, description: '', raw, parsed: false, needsFormatHelp: true };
+  }
+
+  const description = cleanDescription(descPart);
+
+  return { hours, description, raw, parsed: true, needsFormatHelp: false };
 }
 
-module.exports = { parseReply };
+module.exports = { parseReply, SEPARATOR };

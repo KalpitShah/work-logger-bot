@@ -38,6 +38,17 @@
     return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   }
 
+  function fmtDay(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    if (isNaN(d)) return esc(dateStr);
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+
+  // Trim float noise; show whole numbers without a trailing ".0".
+  function fmtHours(n) {
+    return String(Math.round((Number(n) || 0) * 100) / 100);
+  }
+
   const STATUS_META = {
     replied:        { label: 'Replied',  badge: 'badge-green', dot: 'dot-green' },
     awaiting_reply: { label: 'Awaiting', badge: 'badge-amber', dot: 'dot-amber' },
@@ -83,6 +94,74 @@
     } catch (e) {
       body.innerHTML = '<tr><td colspan="4" class="empty">Failed to load status.</td></tr>';
     }
+  }
+
+  // ---- Hours by person matrix -------------------------------------------
+
+  function matrixParams() {
+    const params = new URLSearchParams();
+    const from = document.getElementById('matrix-from').value;
+    const to = document.getElementById('matrix-to').value;
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    if (!from && !to) params.set('days', '30');
+    return params;
+  }
+
+  async function loadMatrix() {
+    const headRow = document.getElementById('matrix-head-row');
+    const body = document.getElementById('matrix-body');
+    const foot = document.getElementById('matrix-foot');
+    try {
+      const data = await api('/api/hours-matrix?' + matrixParams().toString());
+      const users = data.users || [];
+      const span = users.length + 2;
+
+      // Reflect the resolved range back into the (possibly empty) date inputs.
+      if (!document.getElementById('matrix-from').value) {
+        document.getElementById('matrix-from').value = data.from;
+      }
+      if (!document.getElementById('matrix-to').value) {
+        document.getElementById('matrix-to').value = data.to;
+      }
+
+      headRow.innerHTML =
+        '<th>Date</th>' +
+        users.map((u) => `<th class="num">${esc(u.name)}</th>`).join('') +
+        '<th class="num">Total</th>';
+
+      if (!data.rows.length) {
+        body.innerHTML = `<tr><td class="empty" colspan="${span}">No data in this range.</td></tr>`;
+        foot.innerHTML = '';
+        return;
+      }
+
+      body.innerHTML = data.rows.map((r) => {
+        const cells = users.map((u) => {
+          const h = r.cells[u.slack_user_id] || 0;
+          return `<td class="num">${h ? fmtHours(h) : '<span class="muted">·</span>'}</td>`;
+        }).join('');
+        const total = r.total ? fmtHours(r.total) : '<span class="muted">—</span>';
+        return `<tr><td class="cell-day">${esc(fmtDay(r.date))}</td>${cells}<td class="num">${total}</td></tr>`;
+      }).join('');
+
+      const totalCells = users.map(
+        (u) => `<td class="num">${fmtHours(data.totals[u.slack_user_id] || 0)}</td>`
+      ).join('');
+      foot.innerHTML =
+        `<tr class="matrix-total"><td>Total</td>${totalCells}<td class="num">${fmtHours(data.grandTotal || 0)}</td></tr>`;
+    } catch (e) {
+      body.innerHTML = '<tr><td class="empty">Failed to load hours.</td></tr>';
+      foot.innerHTML = '';
+    }
+  }
+
+  function exportMatrix() {
+    const a = document.createElement('a');
+    a.href = '/api/export.csv?' + matrixParams().toString();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   // ---- Entries ----------------------------------------------------------
@@ -175,12 +254,18 @@
   // ---- Boot -------------------------------------------------------------
 
   async function refreshAll() {
-    await Promise.all([loadSummary(), loadStatus(), loadEntries()]);
+    await Promise.all([loadSummary(), loadStatus(), loadMatrix(), loadEntries()]);
+  }
+
+  function initMatrix() {
+    document.getElementById('matrix-apply').addEventListener('click', loadMatrix);
+    document.getElementById('matrix-export').addEventListener('click', exportMatrix);
   }
 
   function init() {
     initTabs();
     initFilters();
+    initMatrix();
     loadUsers();
     refreshAll();
 

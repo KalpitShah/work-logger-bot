@@ -7,6 +7,17 @@ const db = require('./db');
 const { loadConfig, todayString } = require('./config');
 
 /**
+ * Default message sent when a reply is missing the "|" separator (or the hours
+ * portion couldn't be understood). Overridable via config.messages.format_help.
+ */
+const DEFAULT_FORMAT_HELP =
+  "I couldn't read that. Please use *hours* `|` *what you worked on*.\n\n" +
+  'For example:\n' +
+  '• `6 hours | dashboard redesign`\n' +
+  '• `6h | fixed login bug`\n' +
+  '• `half day | code review`';
+
+/**
  * Returns the user record from config matching the given Slack user ID, or
  * undefined if not configured.
  */
@@ -52,6 +63,19 @@ function registerHandlers(app) {
 
       // 7. Parse the reply.
       const parsed = parser.parseReply(message.text);
+
+      // 7a. If the reply is missing the "|" separator (or the hours portion is
+      //     unreadable), prompt for the correct format and stop. The user stays
+      //     "awaiting reply" so they can simply send a corrected message.
+      if (parsed.needsFormatHelp) {
+        const formatHelp =
+          (config.messages && config.messages.format_help) || DEFAULT_FORMAT_HELP;
+        await client.chat.postMessage({
+          channel: message.user,
+          text: formatHelp,
+        });
+        return;
+      }
 
       // 8. Build the entry.
       const entry = {
