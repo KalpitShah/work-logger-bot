@@ -13,6 +13,15 @@
     return res.json();
   }
 
+  // Appends the currently selected workspace id to a URLSearchParams (creating
+  // one if needed) so every API call is scoped to the selected workspace.
+  function wsParam(params) {
+    params = params || new URLSearchParams();
+    const ws = document.getElementById('filter-workspace').value;
+    if (ws) params.set('workspace', ws);
+    return params;
+  }
+
   function esc(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;')
@@ -58,7 +67,7 @@
   // ---- Summary ----------------------------------------------------------
 
   async function loadSummary() {
-    const s = await api('/api/summary');
+    const s = await api('/api/summary?' + wsParam().toString());
     document.getElementById('stat-replied').textContent = s.repliedToday;
     document.getElementById('stat-replied-sub').textContent =
       `of ${s.totalUsers} ${s.totalUsers === 1 ? 'user' : 'users'}`;
@@ -77,7 +86,7 @@
   async function loadStatus() {
     const body = document.getElementById('status-body');
     try {
-      const { users } = await api('/api/status/today');
+      const { users } = await api('/api/status/today?' + wsParam().toString());
       if (!users.length) {
         body.innerHTML = '<tr><td colspan="4" class="empty">No users configured.</td></tr>';
         return;
@@ -105,6 +114,7 @@
     if (from) params.set('from', from);
     if (to) params.set('to', to);
     if (!from && !to) params.set('days', '30');
+    wsParam(params);
     return params;
   }
 
@@ -168,8 +178,9 @@
 
   async function loadUsers() {
     try {
-      const { users } = await api('/api/users');
       const sel = document.getElementById('filter-user');
+      sel.length = 1; // keep the static "All users" option, drop the rest
+      const { users } = await api('/api/users?' + wsParam().toString());
       for (const u of users) {
         const opt = document.createElement('option');
         opt.value = u.slack_user_id;
@@ -190,6 +201,7 @@
     if (from) params.set('from', from);
     if (to) params.set('to', to);
     if (q) params.set('q', q);
+    wsParam(params);
 
     try {
       const { entries } = await api('/api/entries?' + params.toString());
@@ -251,6 +263,24 @@
     });
   }
 
+  // ---- Workspaces -------------------------------------------------------
+
+  async function loadWorkspaces() {
+    try {
+      const { workspaces } = await api('/api/workspaces');
+      const sel = document.getElementById('filter-workspace');
+      sel.innerHTML = '';
+      for (const w of workspaces) {
+        const opt = document.createElement('option');
+        opt.value = w.id;
+        opt.textContent = w.name;
+        sel.appendChild(opt);
+      }
+      // Hide the selector when there's only one workspace.
+      sel.style.display = workspaces.length > 1 ? '' : 'none';
+    } catch (e) { /* ignore */ }
+  }
+
   // ---- Boot -------------------------------------------------------------
 
   async function refreshAll() {
@@ -262,10 +292,19 @@
     document.getElementById('matrix-export').addEventListener('click', exportMatrix);
   }
 
-  function init() {
+  async function init() {
     initTabs();
     initFilters();
     initMatrix();
+
+    // Load workspaces first so the selector (and its value) exists before any
+    // scoped fetch runs.
+    await loadWorkspaces();
+    document.getElementById('filter-workspace').addEventListener('change', () => {
+      loadUsers();
+      refreshAll();
+    });
+
     loadUsers();
     refreshAll();
 

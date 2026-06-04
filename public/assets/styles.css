@@ -131,6 +131,17 @@ html, body {
 .brand-name { font-size: 16px; }
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
 
+.ws-select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--surface);
+  color: var(--text);
+}
+.ws-select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+
 /* ---------- Layout ---------- */
 .container { max-width: 1180px; margin: 0 auto; padding: 24px; }
 

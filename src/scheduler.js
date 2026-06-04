@@ -1,21 +1,9 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const cron = require('node-cron');
 
 const dailyLog = require('./dailyLog');
-
-const USERS_CONFIG_PATH = path.join(__dirname, '../config/users.json');
-
-/**
- * Reads config/users.json fresh from disk so edits take effect without a
- * restart.
- */
-function loadConfig() {
-  const raw = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
-  return JSON.parse(raw);
-}
+const { getWorkspace } = require('./config');
 
 /**
  * Resolves after the given number of milliseconds.
@@ -35,32 +23,27 @@ function currentWeekday(timezone) {
 }
 
 /**
- * Sends today's check-in DM to every configured user.
+ * Sends today's check-in DM to every configured user in the workspace. The
+ * workspace is re-read fresh so config edits (users/messages/days) apply
+ * without a restart.
  */
-async function runDailyCheckin(app) {
-  let config;
-  try {
-    config = loadConfig();
-  } catch (err) {
-    console.error('Could not read users.json for daily check-in:', err.message);
-    return;
-  }
+async function runDailyCheckin(app, workspaceId) {
+  const workspace = getWorkspace(workspaceId);
+  if (!workspace) return;
 
-  const { schedule = {}, messages = {} } = config;
+  const { schedule = {}, messages = {} } = workspace;
   const days = schedule.days || [];
-  const today = currentWeekday(schedule.timezone);
-
-  if (days.length && !days.includes(today)) {
+  if (days.length && !days.includes(currentWeekday(schedule.timezone))) {
     return; // Not a scheduled day.
   }
 
   const checkinMessage = messages.checkin;
   if (!checkinMessage) {
-    console.error('No checkin message configured; skipping daily check-in.');
+    console.error(`[${workspaceId}] No checkin message configured; skipping daily check-in.`);
     return;
   }
 
-  for (const user of config.users || []) {
+  for (const user of workspace.users || []) {
     const userId = user.slack_user_id;
     try {
       const open = await app.client.conversations.open({ users: userId });
@@ -71,10 +54,10 @@ async function runDailyCheckin(app) {
         text: checkinMessage,
       });
 
-      await dailyLog.markSent(userId, user.name);
-      console.log(`Sent daily check-in to ${user.name} (${userId})`);
+      await dailyLog.markSent(workspace, userId, user.name);
+      console.log(`[${workspaceId}] Sent daily check-in to ${user.name} (${userId})`);
     } catch (err) {
-      console.error(`Failed to send check-in to ${user.name} (${userId}):`, err.message);
+      console.error(`[${workspaceId}] Failed to send check-in to ${user.name} (${userId}):`, err.message);
     }
 
     // Space out messages to stay clear of rate limits.
@@ -83,27 +66,21 @@ async function runDailyCheckin(app) {
 }
 
 /**
- * Sends a reminder to every configured user who has not yet replied today.
+ * Sends a reminder to every configured user in the workspace who has not yet
+ * replied today.
  */
-async function runReminder(app) {
-  let config;
-  try {
-    config = loadConfig();
-  } catch (err) {
-    console.error('Could not read users.json for reminder:', err.message);
-    return;
-  }
+async function runReminder(app, workspaceId) {
+  const workspace = getWorkspace(workspaceId);
+  if (!workspace) return;
 
-  const { schedule = {}, reminder = {}, messages = {} } = config;
-
+  const { schedule = {}, reminder = {}, messages = {} } = workspace;
   if (!reminder.enabled) {
     return;
   }
 
   // Honor the same day-of-week restriction as the check-in.
   const days = schedule.days || [];
-  const today = currentWeekday(schedule.timezone);
-  if (days.length && !days.includes(today)) {
+  if (days.length && !days.includes(currentWeekday(schedule.timezone))) {
     return;
   }
 
@@ -112,10 +89,10 @@ async function runReminder(app) {
     return;
   }
 
-  for (const user of config.users || []) {
+  for (const user of workspace.users || []) {
     const userId = user.slack_user_id;
 
-    if (!(await dailyLog.isAwaitingReply(userId))) {
+    if (!(await dailyLog.isAwaitingReply(workspace, userId))) {
       continue;
     }
 
@@ -127,9 +104,9 @@ async function runReminder(app) {
         channel: dmChannelId,
         text: reminderMessage,
       });
-      console.log(`Sent reminder to ${user.name} (${userId})`);
+      console.log(`[${workspaceId}] Sent reminder to ${user.name} (${userId})`);
     } catch (err) {
-      console.error(`Failed to send reminder to ${user.name} (${userId}):`, err.message);
+      console.error(`[${workspaceId}] Failed to send reminder to ${user.name} (${userId}):`, err.message);
     }
 
     await delay(1000);
@@ -137,15 +114,16 @@ async function runReminder(app) {
 }
 
 /**
- * Schedules the daily check-in and reminder cron jobs.
+ * Schedules the daily check-in and reminder cron jobs for a single workspace.
+ * Called once per workspace.
  *
  * @param {import('@slack/bolt').App} app
+ * @param {object} workspace
  */
-function startScheduler(app) {
+function startScheduler(app, workspace) {
   // Read timing once at startup to build the cron expressions. Message content,
   // user list, and day restrictions are re-read fresh on every execution.
-  const config = loadConfig();
-  const { schedule = {}, reminder = {} } = config;
+  const { schedule = {}, reminder = {} } = workspace;
   const timezone = schedule.timezone || 'UTC';
 
   const checkinHour = schedule.send_time_hour ?? 18;
@@ -155,13 +133,13 @@ function startScheduler(app) {
   cron.schedule(
     checkinCron,
     () => {
-      runDailyCheckin(app).catch((err) =>
-        console.error('Unhandled error in daily check-in job:', err.message)
+      runDailyCheckin(app, workspace.id).catch((err) =>
+        console.error(`[${workspace.id}] Unhandled error in daily check-in job:`, err.message)
       );
     },
     { timezone }
   );
-  console.log(`Scheduled daily check-in at ${checkinCron} (${timezone})`);
+  console.log(`[${workspace.id}] Scheduled daily check-in at ${checkinCron} (${timezone})`);
 
   if (reminder.enabled) {
     const reminderHour = reminder.reminder_hour ?? 21;
@@ -171,13 +149,13 @@ function startScheduler(app) {
     cron.schedule(
       reminderCron,
       () => {
-        runReminder(app).catch((err) =>
-          console.error('Unhandled error in reminder job:', err.message)
+        runReminder(app, workspace.id).catch((err) =>
+          console.error(`[${workspace.id}] Unhandled error in reminder job:`, err.message)
         );
       },
       { timezone }
     );
-    console.log(`Scheduled reminder at ${reminderCron} (${timezone})`);
+    console.log(`[${workspace.id}] Scheduled reminder at ${reminderCron} (${timezone})`);
   }
 }
 

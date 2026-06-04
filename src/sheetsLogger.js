@@ -75,9 +75,13 @@ async function ensureHeaders(sheets, spreadsheetId) {
  *   parsed: boolean,
  *   logged_at: string
  * }} entry
+ * @param {string} [sheetId] Per-workspace sheet id; falls back to the global
+ *   GOOGLE_SHEET_ID env var. If neither is set, the append is skipped silently
+ *   (a workspace without a configured sheet is valid).
  */
-async function logEntry(entry) {
-  const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+async function logEntry(entry, sheetId) {
+  const spreadsheetId = sheetId || process.env.GOOGLE_SHEET_ID;
+  if (!spreadsheetId) return; // No sheet configured for this workspace; skip.
 
   try {
     const sheets = getSheetsClient();

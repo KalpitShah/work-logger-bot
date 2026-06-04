@@ -4,11 +4,11 @@ const dailyLog = require('./dailyLog');
 const parser = require('./parser');
 const sheetsLogger = require('./sheetsLogger');
 const db = require('./db');
-const { loadConfig, todayString } = require('./config');
+const { getWorkspace, todayString } = require('./config');
 
 /**
  * Default message sent when a reply is missing the "|" separator (or the hours
- * portion couldn't be understood). Overridable via config.messages.format_help.
+ * portion couldn't be understood). Overridable via messages.format_help.
  */
 const DEFAULT_FORMAT_HELP =
   "I couldn't read that. Please use *hours* `|` *what you worked on*.\n\n" +
@@ -18,19 +18,22 @@ const DEFAULT_FORMAT_HELP =
   '• `half day | code review`';
 
 /**
- * Returns the user record from config matching the given Slack user ID, or
+ * Returns the user record from a workspace matching the given Slack user ID, or
  * undefined if not configured.
  */
-function findUser(config, userId) {
-  return (config.users || []).find((u) => u.slack_user_id === userId);
+function findUser(workspace, userId) {
+  return (workspace.users || []).find((u) => u.slack_user_id === userId);
 }
 
 /**
- * Registers the incoming-DM message listener on the Bolt app.
+ * Registers the incoming-DM message listener on the Bolt app for a single
+ * workspace. Each Slack app only receives its own workspace's events, so the
+ * handler is bound to exactly one workspace — no team_id routing is needed.
  *
  * @param {import('@slack/bolt').App} app
+ * @param {object} workspace
  */
-function registerHandlers(app) {
+function registerHandlers(app, workspace) {
   app.message(async ({ message, client }) => {
     try {
       // 1. Ignore the bot's own messages.
@@ -48,16 +51,17 @@ function registerHandlers(app) {
         return;
       }
 
-      const config = loadConfig();
+      // Re-read the workspace fresh so config edits apply without a restart.
+      const ws = getWorkspace(workspace.id) || workspace;
 
       // 3 & 4. Only respond to configured users.
-      const userRecord = findUser(config, message.user);
+      const userRecord = findUser(ws, message.user);
       if (!userRecord) {
         return;
       }
 
       // 5 & 6. Only log if this user is awaiting a reply today.
-      if (!(await dailyLog.isAwaitingReply(message.user))) {
+      if (!(await dailyLog.isAwaitingReply(ws, message.user))) {
         return;
       }
 
@@ -69,7 +73,7 @@ function registerHandlers(app) {
       //     "awaiting reply" so they can simply send a corrected message.
       if (parsed.needsFormatHelp) {
         const formatHelp =
-          (config.messages && config.messages.format_help) || DEFAULT_FORMAT_HELP;
+          (ws.messages && ws.messages.format_help) || DEFAULT_FORMAT_HELP;
         await client.chat.postMessage({
           channel: message.user,
           text: formatHelp,
@@ -77,9 +81,12 @@ function registerHandlers(app) {
         return;
       }
 
-      // 8. Build the entry.
+      const tz = (ws.schedule && ws.schedule.timezone) || 'UTC';
+
+      // 8. Build the entry, tagged with the workspace.
       const entry = {
-        date: todayString(),
+        workspace_id: ws.id,
+        date: todayString(tz),
         name: userRecord.name,
         slack_user_id: message.user,
         hours: parsed.hours,
@@ -101,17 +108,16 @@ function registerHandlers(app) {
       // 8b. Best-effort: also append to Google Sheets if configured. A failure
       //     here (e.g. no credentials) must not block logging or confirmation.
       try {
-        await sheetsLogger.logEntry(entry);
+        await sheetsLogger.logEntry(entry, ws.sheet_id);
       } catch (sheetErr) {
         // sheetsLogger already logs the error and raw entry.
       }
 
       // 9. Mark the user as having replied.
-      await dailyLog.markReplied(message.user);
+      await dailyLog.markReplied(ws, message.user);
 
       // 10. Send a confirmation DM if configured.
-      const confirmationText =
-        config.messages && config.messages.confirmation;
+      const confirmationText = ws.messages && ws.messages.confirmation;
       if (confirmationText) {
         await client.chat.postMessage({
           channel: message.user,
@@ -120,7 +126,7 @@ function registerHandlers(app) {
       }
     } catch (err) {
       // 11. Log but never crash.
-      console.error('Error handling incoming message:', err.message);
+      console.error(`[${workspace.id}] Error handling incoming message:`, err.message);
     }
   });
 }

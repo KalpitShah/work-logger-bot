@@ -6,10 +6,24 @@ const express = require('express');
 const session = require('express-session');
 
 const db = require('./db');
-const { loadConfig, todayString } = require('./config');
+const { getWorkspaces, todayString } = require('./config');
 
 const PUBLIC_DIR = path.join(__dirname, '../public');
 const VIEWS_DIR = path.join(PUBLIC_DIR, 'views');
+
+/**
+ * Resolves the workspace for a request from the `?workspace=<id>` query param,
+ * falling back to the first configured workspace (the dashboard default).
+ */
+function resolveWorkspace(query) {
+  const workspaces = getWorkspaces();
+  const id = query.workspace;
+  return (id && workspaces.find((w) => w.id === id)) || workspaces[0] || null;
+}
+
+function tzOf(ws) {
+  return (ws && ws.schedule && ws.schedule.timezone) || 'UTC';
+}
 
 const DASHBOARD_USERNAME = process.env.DASHBOARD_USERNAME || 'admin';
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'changeme';
@@ -25,13 +39,13 @@ function safeEqual(a, b) {
 }
 
 /**
- * Returns the YYYY-MM-DD string for N days ago in the configured timezone.
+ * Returns the YYYY-MM-DD string for N days ago in the given timezone.
  */
-function dateNDaysAgo(n) {
+function dateNDaysAgo(n, tz) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: require('./config').getTimezone(),
+    timeZone: tz || 'UTC',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -68,14 +82,13 @@ function round2(n) {
  *
  * @returns {Promise<{from: string, to: string, users: Array<{slack_user_id: string, name: string}>, rows: Array<{date: string, cells: Object, total: number}>, totals: Object, grandTotal: number}>}
  */
-async function computeHoursMatrix({ from, to }) {
-  const config = loadConfig();
-  const users = (config.users || []).map((u) => ({
+async function computeHoursMatrix({ from, to, workspace }) {
+  const users = (workspace.users || []).map((u) => ({
     slack_user_id: u.slack_user_id,
     name: u.name,
   }));
 
-  const dataRows = await db.getDailyHoursByUser({ from, to });
+  const dataRows = await db.getDailyHoursByUser({ workspaceId: workspace.id, from, to });
 
   // Append users present in the data but missing from config.
   const seen = new Set(users.map((u) => u.slack_user_id));
@@ -117,10 +130,10 @@ async function computeHoursMatrix({ from, to }) {
  * Resolves the {from, to} range from query params, defaulting to the last
  * `days` (default 30) ending today in the configured timezone.
  */
-function resolveRange(query) {
+function resolveRange(query, tz) {
   const days = Math.min(Math.max(Number(query.days) || 30, 1), 366);
-  const to = query.to || todayString();
-  const from = query.from || dateNDaysAgo(days - 1);
+  const to = query.to || todayString(tz);
+  const from = query.from || dateNDaysAgo(days - 1, tz);
   return { from, to };
 }
 
@@ -205,11 +218,20 @@ function createWebServer() {
     res.json({ username: req.session.username });
   });
 
-  // Configured users (for filter dropdowns).
+  // Configured workspaces (for the dashboard workspace selector).
+  app.get('/api/workspaces', requireApiAuth, (req, res) => {
+    try {
+      res.json({ workspaces: getWorkspaces().map((w) => ({ id: w.id, name: w.name })) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Configured users for the selected workspace (for filter dropdowns).
   app.get('/api/users', requireApiAuth, (req, res) => {
     try {
-      const config = loadConfig();
-      res.json({ users: config.users || [] });
+      const workspace = resolveWorkspace(req.query);
+      res.json({ users: (workspace && workspace.users) || [] });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -219,12 +241,14 @@ function createWebServer() {
   // users who have not been messaged yet still appear ("not_sent").
   app.get('/api/status/today', requireApiAuth, async (req, res) => {
     try {
-      const date = todayString();
-      const config = loadConfig();
-      const rows = await db.getStatusForDate(date);
+      const workspace = resolveWorkspace(req.query);
+      if (!workspace) return res.json({ date: todayString('UTC'), users: [] });
+      const tz = tzOf(workspace);
+      const date = todayString(tz);
+      const rows = await db.getStatusForDate({ workspaceId: workspace.id, date });
       const byId = new Map(rows.map((r) => [r.slack_user_id, r]));
 
-      const users = (config.users || []).map((u) => {
+      const users = (workspace.users || []).map((u) => {
         const row = byId.get(u.slack_user_id);
         return {
           slack_user_id: u.slack_user_id,
@@ -257,8 +281,11 @@ function createWebServer() {
   // Logged work entries, with optional filters.
   app.get('/api/entries', requireApiAuth, async (req, res) => {
     try {
+      const workspace = resolveWorkspace(req.query);
+      if (!workspace) return res.json({ entries: [] });
       const { user, from, to, q, limit } = req.query;
       const entries = await db.getEntries({
+        workspaceId: workspace.id,
         userId: user || undefined,
         from: from || undefined,
         to: to || undefined,
@@ -274,16 +301,29 @@ function createWebServer() {
   // Summary cards.
   app.get('/api/summary', requireApiAuth, async (req, res) => {
     try {
-      const date = todayString();
-      const config = loadConfig();
-      const totalUsers = (config.users || []).length;
-      const todayRows = await db.getStatusForDate(date);
+      const workspace = resolveWorkspace(req.query);
+      if (!workspace) {
+        return res.json({
+          date: todayString('UTC'),
+          totalUsers: 0,
+          repliedToday: 0,
+          awaitingToday: 0,
+          sentToday: 0,
+          totalEntries: 0,
+          hoursLast7Days: 0,
+        });
+      }
+      const tz = tzOf(workspace);
+      const date = todayString(tz);
+      const totalUsers = (workspace.users || []).length;
+      const todayRows = await db.getStatusForDate({ workspaceId: workspace.id, date });
 
       const repliedToday = todayRows.filter((r) => r.status === 'replied').length;
       const awaitingToday = todayRows.filter((r) => r.status === 'awaiting_reply').length;
 
-      const totalEntries = await db.countEntries();
-      const hoursLast7Days = Math.round((await db.sumHoursSince(dateNDaysAgo(6))) * 100) / 100;
+      const totalEntries = await db.countEntries({ workspaceId: workspace.id });
+      const hoursLast7Days =
+        Math.round((await db.sumHoursSince(dateNDaysAgo(6, tz), workspace.id)) * 100) / 100;
 
       res.json({
         date,
@@ -302,8 +342,14 @@ function createWebServer() {
   // Per-employee daily hours matrix (default: last 30 days, newest first).
   app.get('/api/hours-matrix', requireApiAuth, async (req, res) => {
     try {
-      const { from, to } = resolveRange(req.query);
-      const matrix = await computeHoursMatrix({ from, to });
+      const workspace = resolveWorkspace(req.query);
+      if (!workspace) {
+        const { from, to } = resolveRange(req.query, 'UTC');
+        return res.json({ from, to, users: [], rows: [], totals: {}, grandTotal: 0 });
+      }
+      const tz = tzOf(workspace);
+      const { from, to } = resolveRange(req.query, tz);
+      const matrix = await computeHoursMatrix({ from, to, workspace });
       res.json(matrix);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -313,8 +359,11 @@ function createWebServer() {
   // CSV export of the hours matrix for a selected date range.
   app.get('/api/export.csv', requireApiAuth, async (req, res) => {
     try {
-      const { from, to } = resolveRange(req.query);
-      const { users, rows, totals, grandTotal } = await computeHoursMatrix({ from, to });
+      const workspace = resolveWorkspace(req.query);
+      if (!workspace) return res.status(404).json({ error: 'no workspace configured' });
+      const tz = tzOf(workspace);
+      const { from, to } = resolveRange(req.query, tz);
+      const { users, rows, totals, grandTotal } = await computeHoursMatrix({ from, to, workspace });
 
       const header = ['Date', ...users.map((u) => u.name), 'Total'];
       const lines = [header.map(csvCell).join(',')];
@@ -330,7 +379,7 @@ function createWebServer() {
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="work-hours_${from}_to_${to}.csv"`
+        `attachment; filename="work-hours_${workspace.id}_${from}_to_${to}.csv"`
       );
       res.send(csv);
     } catch (err) {

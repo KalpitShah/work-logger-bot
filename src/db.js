@@ -32,19 +32,21 @@ let initPromise = null;
 async function init() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS daily_status (
+      workspace_id  VARCHAR(64)  NOT NULL DEFAULT 'default',
       date          VARCHAR(10)  NOT NULL,
       slack_user_id VARCHAR(64)  NOT NULL,
       name          VARCHAR(255),
       status        VARCHAR(32)  NOT NULL,
       sent_at       VARCHAR(40),
       replied_at    VARCHAR(40),
-      PRIMARY KEY (date, slack_user_id)
+      PRIMARY KEY (workspace_id, date, slack_user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS entries (
       id            INT AUTO_INCREMENT PRIMARY KEY,
+      workspace_id  VARCHAR(64)  NOT NULL DEFAULT 'default',
       date          VARCHAR(10)  NOT NULL,
       slack_user_id VARCHAR(64)  NOT NULL,
       name          VARCHAR(255),
@@ -54,9 +56,45 @@ async function init() {
       parsed        TINYINT      NOT NULL DEFAULT 0,
       logged_at     VARCHAR(40)  NOT NULL,
       INDEX idx_entries_date (date),
-      INDEX idx_entries_user (slack_user_id)
+      INDEX idx_entries_user (slack_user_id),
+      INDEX idx_entries_workspace (workspace_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  await migrate();
+}
+
+async function columnExists(table, column) {
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) AS n FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = :t AND column_name = :c`,
+    { t: table, c: column }
+  );
+  return rows[0].n > 0;
+}
+
+/**
+ * Upgrades pre-existing single-workspace tables in place. New installs already
+ * have the columns from CREATE TABLE, so each guard is a no-op there.
+ */
+async function migrate() {
+  if (!(await columnExists('daily_status', 'workspace_id'))) {
+    await pool.query(
+      `ALTER TABLE daily_status
+         ADD COLUMN workspace_id VARCHAR(64) NOT NULL DEFAULT 'default' FIRST`
+    );
+    await pool.query(`ALTER TABLE daily_status DROP PRIMARY KEY`);
+    await pool.query(
+      `ALTER TABLE daily_status ADD PRIMARY KEY (workspace_id, date, slack_user_id)`
+    );
+  }
+  if (!(await columnExists('entries', 'workspace_id'))) {
+    await pool.query(
+      `ALTER TABLE entries
+         ADD COLUMN workspace_id VARCHAR(64) NOT NULL DEFAULT 'default' AFTER id`
+    );
+    await pool.query(`ALTER TABLE entries ADD INDEX idx_entries_workspace (workspace_id)`);
+  }
 }
 
 function ready() {
@@ -66,44 +104,45 @@ function ready() {
 
 // --- Public helpers ------------------------------------------------------
 
-async function markSent({ date, slackUserId, name, sentAt }) {
+async function markSent({ workspaceId, date, slackUserId, name, sentAt }) {
   await ready();
   await pool.query(
-    `INSERT INTO daily_status (date, slack_user_id, name, status, sent_at)
-     VALUES (:date, :slack_user_id, :name, 'awaiting_reply', :sent_at)
+    `INSERT INTO daily_status (workspace_id, date, slack_user_id, name, status, sent_at)
+     VALUES (:workspace_id, :date, :slack_user_id, :name, 'awaiting_reply', :sent_at)
      ON DUPLICATE KEY UPDATE
        name    = VALUES(name),
        status  = 'awaiting_reply',
        sent_at = VALUES(sent_at)`,
-    { date, slack_user_id: slackUserId, name: name || null, sent_at: sentAt }
+    { workspace_id: workspaceId, date, slack_user_id: slackUserId, name: name || null, sent_at: sentAt }
   );
 }
 
-async function markReplied({ date, slackUserId, repliedAt }) {
+async function markReplied({ workspaceId, date, slackUserId, repliedAt }) {
   await ready();
   await pool.query(
     `UPDATE daily_status
      SET status = 'replied', replied_at = :replied_at
-     WHERE date = :date AND slack_user_id = :slack_user_id`,
-    { date, slack_user_id: slackUserId, replied_at: repliedAt }
+     WHERE workspace_id = :workspace_id AND date = :date AND slack_user_id = :slack_user_id`,
+    { workspace_id: workspaceId, date, slack_user_id: slackUserId, replied_at: repliedAt }
   );
 }
 
-async function getStatus({ date, slackUserId }) {
+async function getStatus({ workspaceId, date, slackUserId }) {
   await ready();
   const [rows] = await pool.query(
-    `SELECT status FROM daily_status WHERE date = :date AND slack_user_id = :slack_user_id`,
-    { date, slack_user_id: slackUserId }
+    `SELECT status FROM daily_status
+     WHERE workspace_id = :workspace_id AND date = :date AND slack_user_id = :slack_user_id`,
+    { workspace_id: workspaceId, date, slack_user_id: slackUserId }
   );
   return rows.length ? rows[0].status : null;
 }
 
-async function getStatusForDate(date) {
+async function getStatusForDate({ workspaceId, date }) {
   await ready();
   const [rows] = await pool.query(
-    `SELECT date, slack_user_id, name, status, sent_at, replied_at
-     FROM daily_status WHERE date = :date`,
-    { date }
+    `SELECT workspace_id, date, slack_user_id, name, status, sent_at, replied_at
+     FROM daily_status WHERE workspace_id = :workspace_id AND date = :date`,
+    { workspace_id: workspaceId, date }
   );
   return rows;
 }
@@ -111,9 +150,10 @@ async function getStatusForDate(date) {
 async function insertEntry(entry) {
   await ready();
   await pool.query(
-    `INSERT INTO entries (date, slack_user_id, name, hours, description, raw_reply, parsed, logged_at)
-     VALUES (:date, :slack_user_id, :name, :hours, :description, :raw_reply, :parsed, :logged_at)`,
+    `INSERT INTO entries (workspace_id, date, slack_user_id, name, hours, description, raw_reply, parsed, logged_at)
+     VALUES (:workspace_id, :date, :slack_user_id, :name, :hours, :description, :raw_reply, :parsed, :logged_at)`,
     {
+      workspace_id: entry.workspace_id || 'default',
       date: entry.date,
       slack_user_id: entry.slack_user_id,
       name: entry.name || null,
@@ -127,17 +167,21 @@ async function insertEntry(entry) {
 }
 
 /**
- * Returns entries with optional filtering. Filters: userId, from (date),
- * to (date), q (search in description/raw_reply). Newest first.
+ * Returns entries with optional filtering. Filters: workspaceId, userId,
+ * from (date), to (date), q (search in description/raw_reply). Newest first.
  *
  * logged_at is stored as an ISO 8601 string, so lexicographic ordering matches
  * chronological ordering — no datetime() coercion needed (and MySQL has none).
  */
-async function getEntries({ userId, from, to, q, limit = 1000 } = {}) {
+async function getEntries({ workspaceId, userId, from, to, q, limit = 1000 } = {}) {
   await ready();
   const clauses = [];
   const params = {};
 
+  if (workspaceId) {
+    clauses.push('workspace_id = :workspaceId');
+    params.workspaceId = workspaceId;
+  }
   if (userId) {
     clauses.push('slack_user_id = :userId');
     params.userId = userId;
@@ -160,7 +204,7 @@ async function getEntries({ userId, from, to, q, limit = 1000 } = {}) {
   const lim = Math.min(Number(limit) || 1000, 5000);
 
   const sql = `
-    SELECT id, date, slack_user_id, name, hours, description, raw_reply, parsed, logged_at
+    SELECT id, workspace_id, date, slack_user_id, name, hours, description, raw_reply, parsed, logged_at
     FROM entries
     ${where}
     ORDER BY logged_at DESC, id DESC
@@ -170,17 +214,30 @@ async function getEntries({ userId, from, to, q, limit = 1000 } = {}) {
   return rows;
 }
 
-async function countEntries() {
+async function countEntries({ workspaceId } = {}) {
   await ready();
+  if (workspaceId) {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS n FROM entries WHERE workspace_id = :workspaceId`,
+      { workspaceId }
+    );
+    return rows[0].n;
+  }
   const [rows] = await pool.query(`SELECT COUNT(*) AS n FROM entries`);
   return rows[0].n;
 }
 
-async function sumHoursSince(fromDate) {
+async function sumHoursSince(fromDate, workspaceId) {
   await ready();
+  const clauses = ['date >= :from'];
+  const params = { from: fromDate };
+  if (workspaceId) {
+    clauses.push('workspace_id = :workspaceId');
+    params.workspaceId = workspaceId;
+  }
   const [rows] = await pool.query(
-    `SELECT COALESCE(SUM(hours), 0) AS total FROM entries WHERE date >= :from`,
-    { from: fromDate }
+    `SELECT COALESCE(SUM(hours), 0) AS total FROM entries WHERE ${clauses.join(' AND ')}`,
+    params
   );
   return rows[0].total || 0;
 }
@@ -190,10 +247,14 @@ async function sumHoursSince(fromDate) {
  * for building the per-employee daily hours matrix. One row per day a user
  * logged at least one entry; multiple entries on the same day are summed.
  */
-async function getDailyHoursByUser({ from, to } = {}) {
+async function getDailyHoursByUser({ workspaceId, from, to } = {}) {
   await ready();
   const clauses = ['hours IS NOT NULL'];
   const params = {};
+  if (workspaceId) {
+    clauses.push('workspace_id = :workspaceId');
+    params.workspaceId = workspaceId;
+  }
   if (from) {
     clauses.push('date >= :from');
     params.from = from;
