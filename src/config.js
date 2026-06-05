@@ -1,14 +1,14 @@
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 
-const USERS_CONFIG_PATH = path.join(__dirname, '../config/users.json');
+const USERS_CONFIG_PATH = path.join(__dirname, '../config/users.js');
 const DEFAULT_WORKSPACE_ID = 'default';
 
 /**
- * Reads config/users.json fresh from disk (so edits take effect without a
- * restart) and normalizes it to the multi-workspace shape.
+ * Loads config/users.js fresh on every call (so edits take effect without a
+ * restart) and normalizes it to the multi-workspace shape. The require cache is
+ * busted each time to match the previous read-fresh-from-disk behavior.
  *
  * Supported formats:
  *   1. Multi-workspace: { workspaces: [ { id, name, users, schedule, ... } ] }
@@ -17,8 +17,8 @@ const DEFAULT_WORKSPACE_ID = 'default';
  *      their stored data (workspace_id='default') keep working.
  */
 function loadConfig() {
-  const raw = fs.readFileSync(USERS_CONFIG_PATH, 'utf8');
-  return normalizeConfig(JSON.parse(raw));
+  delete require.cache[require.resolve(USERS_CONFIG_PATH)];
+  return normalizeConfig(require(USERS_CONFIG_PATH));
 }
 
 function normalizeConfig(parsed) {
@@ -85,6 +85,18 @@ function todayString(timezone) {
   }).format(new Date());
 }
 
+/**
+ * Returns a YYYY-MM-DD date string shifted by `deltaDays` (may be negative).
+ * Pure calendar arithmetic on the date parts, so it is timezone-independent
+ * and unaffected by DST (no local-time conversion involved).
+ */
+function shiftDate(dateStr, deltaDays) {
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return dt.toISOString().slice(0, 10);
+}
+
 module.exports = {
   loadConfig,
   getWorkspaces,
@@ -94,6 +106,7 @@ module.exports = {
   dashboardPasswordEnvKey,
   getTimezone,
   todayString,
+  shiftDate,
   USERS_CONFIG_PATH,
   DEFAULT_WORKSPACE_ID,
 };

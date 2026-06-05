@@ -137,6 +137,28 @@ async function getStatus({ workspaceId, date, slackUserId }) {
   return rows.length ? rows[0].status : null;
 }
 
+/**
+ * Returns the date (YYYY-MM-DD) of the most recent still-open ('awaiting_reply')
+ * check-in for a user on or after `since`, or null if none is open. Used to let
+ * a user reply the morning after a late-night check-in and still have it logged
+ * against the correct day. `date` is a YYYY-MM-DD string, so lexicographic
+ * ordering matches chronological ordering.
+ */
+async function findOpenCheckinDate({ workspaceId, slackUserId, since }) {
+  await ready();
+  const [rows] = await pool.query(
+    `SELECT date FROM daily_status
+     WHERE workspace_id = :workspace_id
+       AND slack_user_id = :slack_user_id
+       AND status = 'awaiting_reply'
+       AND date >= :since
+     ORDER BY date DESC
+     LIMIT 1`,
+    { workspace_id: workspaceId, slack_user_id: slackUserId, since }
+  );
+  return rows.length ? rows[0].date : null;
+}
+
 async function getStatusForDate({ workspaceId, date }) {
   await ready();
   const [rows] = await pool.query(
@@ -280,6 +302,7 @@ module.exports = {
   markSent,
   markReplied,
   getStatus,
+  findOpenCheckinDate,
   getStatusForDate,
   insertEntry,
   getEntries,

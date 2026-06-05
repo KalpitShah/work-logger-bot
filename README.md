@@ -56,7 +56,7 @@ slack-work-logger/
     views/            login.html, index.html (dashboard)
     assets/           styles.css, app.js, login.js
   config/
-    users.json        users, schedule, reminder, and message text
+    users.js          users, schedule, reminder, and message text (commented)
   logs/               PM2 logs (auto-created, git-ignored)
   .env                secrets (never committed)
   .env.example        template of required keys
@@ -65,7 +65,7 @@ slack-work-logger/
 ```
 
 The only file you normally edit to manage users, timings, and message text is
-`config/users.json`. The scheduler reads it fresh on every run, so user/schedule
+`config/users.js`. The scheduler reads it fresh on every run, so user/schedule
 changes take effect **without a restart**.
 
 > **Storage note:** the MySQL database is the source of truth for the dashboard
@@ -220,7 +220,7 @@ process.
    ```bash
    cp .env.example .env
    # edit .env and fill in all values
-   # edit config/users.json with your real Slack user IDs, names, and timings
+   # edit config/users.js with your real Slack user IDs, names, and timings
    ```
 6. Install dependencies:
    ```bash
@@ -239,7 +239,7 @@ process.
 
 ### Adding / removing users
 
-Edit `config/users.json` — **no restart needed**, the scheduler reads it fresh
+Edit `config/users.js` — **no restart needed**, the scheduler reads it fresh
 on each run. If you also want the message handlers to pick up changes
 immediately, run `pm2 restart slack-work-logger`.
 

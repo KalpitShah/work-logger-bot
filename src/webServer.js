@@ -60,7 +60,7 @@ function safeEqual(a, b) {
 }
 
 /**
- * Authenticates a dashboard login. Users are defined in config/users.json
+ * Authenticates a dashboard login. Users are defined in config/users.js
  * (dashboard_users) and their passwords in .env as DASHBOARD_PASSWORD_<USERNAME>.
  * Returns the matched user record on success, or null.
  */

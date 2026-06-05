@@ -82,7 +82,7 @@ async function main() {
 
   const workspaces = getWorkspaces();
   if (!workspaces.length) {
-    console.error('No workspaces configured in config/users.json');
+    console.error('No workspaces configured in config/users.js');
   }
 
   // Start each workspace's Slack app independently; one bad workspace (missing

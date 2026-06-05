@@ -2,9 +2,10 @@
 
 const dailyLog = require('./dailyLog');
 const parser = require('./parser');
-const sheetsLogger = require('./sheetsLogger');
+// Google Sheets logging disabled — kept for future re-enable.
+// const sheetsLogger = require('./sheetsLogger');
 const db = require('./db');
-const { getWorkspace, todayString } = require('./config');
+const { getWorkspace } = require('./config');
 
 /**
  * Default message sent when a reply is missing the "|" separator (or the hours
@@ -13,9 +14,8 @@ const { getWorkspace, todayString } = require('./config');
 const DEFAULT_FORMAT_HELP =
   "I couldn't read that. Please use *hours* `|` *what you worked on*.\n\n" +
   'For example:\n' +
-  '• `6 hours | dashboard redesign`\n' +
-  '• `6h | fixed login bug`\n' +
-  '• `half day | code review`';
+  '• `6 hours | redesigned the dashboard layout and added the date-range filter`\n' +
+  '• `6h | fixed the login bug where expired sessions were not redirecting to /login`';
 
 /**
  * Returns the user record from a workspace matching the given Slack user ID, or
@@ -60,8 +60,12 @@ function registerHandlers(app, workspace) {
         return;
       }
 
-      // 5 & 6. Only log if this user is awaiting a reply today.
-      if (!(await dailyLog.isAwaitingReply(ws, message.user))) {
+      // 5 & 6. Only log if this user has an open check-in to answer. This is
+      //     today's check-in, or a recent one still within the reply grace
+      //     window (so a reply sent after midnight — e.g. the morning after a
+      //     22:00 check-in — is logged against the day it answers, not dropped).
+      const checkinDate = await dailyLog.getOpenCheckinDate(ws, message.user);
+      if (!checkinDate) {
         return;
       }
 
@@ -81,12 +85,11 @@ function registerHandlers(app, workspace) {
         return;
       }
 
-      const tz = (ws.schedule && ws.schedule.timezone) || 'UTC';
-
-      // 8. Build the entry, tagged with the workspace.
+      // 8. Build the entry, tagged with the workspace and dated to the check-in
+      //     it answers (not the arrival date, which may be the next morning).
       const entry = {
         workspace_id: ws.id,
-        date: todayString(tz),
+        date: checkinDate,
         name: userRecord.name,
         slack_user_id: message.user,
         hours: parsed.hours,
@@ -105,16 +108,17 @@ function registerHandlers(app, workspace) {
         console.error('Unsaved entry:', JSON.stringify(entry));
       }
 
-      // 8b. Best-effort: also append to Google Sheets if configured. A failure
-      //     here (e.g. no credentials) must not block logging or confirmation.
-      try {
-        await sheetsLogger.logEntry(entry, ws.sheet_id);
-      } catch (sheetErr) {
-        // sheetsLogger already logs the error and raw entry.
-      }
+      // 8b. Google Sheets logging disabled — kept for future re-enable.
+      // // Best-effort: also append to Google Sheets if configured. A failure
+      // // here (e.g. no credentials) must not block logging or confirmation.
+      // try {
+      //   await sheetsLogger.logEntry(entry, ws.sheet_id);
+      // } catch (sheetErr) {
+      //   // sheetsLogger already logs the error and raw entry.
+      // }
 
-      // 9. Mark the user as having replied.
-      await dailyLog.markReplied(ws, message.user);
+      // 9. Mark the user as having replied to that check-in's date.
+      await dailyLog.markReplied(ws, message.user, checkinDate);
 
       // 10. Send a confirmation DM if configured.
       const confirmationText = ws.messages && ws.messages.confirmation;
