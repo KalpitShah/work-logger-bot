@@ -94,7 +94,7 @@ module.exports = {
       sheet_id: '',
       users: [
         { slack_user_id: 'U0B1P6NLMSR', name: 'Dainik' },
-        // { slack_user_id: 'U0B1SJ7E6MQ', name: 'Kalpit' },
+        { slack_user_id: 'U0B1SJ7E6MQ', name: 'Kalpit' },
       ],
       schedule,
       reminder,
