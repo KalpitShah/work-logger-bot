@@ -6,27 +6,48 @@ const express = require('express');
 const session = require('express-session');
 
 const db = require('./db');
-const { getWorkspaces, todayString } = require('./config');
+const {
+  getWorkspaces,
+  getDashboardUser,
+  dashboardPasswordEnvKey,
+  todayString,
+} = require('./config');
 
 const PUBLIC_DIR = path.join(__dirname, '../public');
 const VIEWS_DIR = path.join(PUBLIC_DIR, 'views');
 
 /**
- * Resolves the workspace for a request from the `?workspace=<id>` query param,
- * falling back to the first configured workspace (the dashboard default).
+ * The workspace ids the logged-in user may access, resolved against the current
+ * config. The session stores the raw allowed list from config (which may be
+ * ["*"], meaning "every workspace"); this expands "*" to the live workspace set.
  */
-function resolveWorkspace(query) {
-  const workspaces = getWorkspaces();
-  const id = query.workspace;
-  return (id && workspaces.find((w) => w.id === id)) || workspaces[0] || null;
+function sessionWorkspaceIds(req) {
+  const allowed = (req.session && req.session.workspaces) || [];
+  if (allowed.includes('*')) return getWorkspaces().map((w) => w.id);
+  return allowed;
+}
+
+/** The workspace objects the logged-in user may access, in config order. */
+function allowedWorkspaces(req) {
+  const ids = new Set(sessionWorkspaceIds(req));
+  return getWorkspaces().filter((w) => ids.has(w.id));
+}
+
+/**
+ * Resolves the workspace for a request from the `?workspace=<id>` query param,
+ * restricted to the workspaces the logged-in user may access. An unauthorized
+ * or unknown id falls back to the user's first allowed workspace, so a user can
+ * never read another workspace's data by tampering with the query string.
+ */
+function resolveWorkspace(req) {
+  const list = allowedWorkspaces(req);
+  const id = req.query.workspace;
+  return (id && list.find((w) => w.id === id)) || list[0] || null;
 }
 
 function tzOf(ws) {
   return (ws && ws.schedule && ws.schedule.timezone) || 'UTC';
 }
-
-const DASHBOARD_USERNAME = process.env.DASHBOARD_USERNAME || 'admin';
-const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'changeme';
 
 /**
  * Timing-safe string comparison to avoid leaking length/timing info.
@@ -36,6 +57,20 @@ function safeEqual(a, b) {
   const bb = Buffer.from(String(b));
   if (ba.length !== bb.length) return false;
   return crypto.timingSafeEqual(ba, bb);
+}
+
+/**
+ * Authenticates a dashboard login. Users are defined in config/users.json
+ * (dashboard_users) and their passwords in .env as DASHBOARD_PASSWORD_<USERNAME>.
+ * Returns the matched user record on success, or null.
+ */
+function authenticateDashboardUser(username, password) {
+  const user = getDashboardUser(username);
+  if (!user) return null;
+  const expected = process.env[dashboardPasswordEnvKey(user.username)];
+  if (!expected) return null; // No password set for this user; deny.
+  if (!safeEqual(password || '', expected)) return null;
+  return user;
 }
 
 /**
@@ -194,9 +229,12 @@ function createWebServer() {
 
   app.post('/api/login', (req, res) => {
     const { username, password } = req.body || {};
-    if (safeEqual(username || '', DASHBOARD_USERNAME) && safeEqual(password || '', DASHBOARD_PASSWORD)) {
+    const user = authenticateDashboardUser(username, password);
+    if (user) {
       req.session.authed = true;
-      req.session.username = DASHBOARD_USERNAME;
+      req.session.username = user.username;
+      // Store the allowed workspace ids so every request is scoped to them.
+      req.session.workspaces = Array.isArray(user.workspaces) ? user.workspaces : [];
       return res.json({ ok: true });
     }
     return res.status(401).json({ error: 'Invalid username or password' });
@@ -218,10 +256,11 @@ function createWebServer() {
     res.json({ username: req.session.username });
   });
 
-  // Configured workspaces (for the dashboard workspace selector).
+  // Workspaces the logged-in user may access (for the dashboard selector). When
+  // the user has only one, the frontend hides the selector entirely.
   app.get('/api/workspaces', requireApiAuth, (req, res) => {
     try {
-      res.json({ workspaces: getWorkspaces().map((w) => ({ id: w.id, name: w.name })) });
+      res.json({ workspaces: allowedWorkspaces(req).map((w) => ({ id: w.id, name: w.name })) });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -230,7 +269,7 @@ function createWebServer() {
   // Configured users for the selected workspace (for filter dropdowns).
   app.get('/api/users', requireApiAuth, (req, res) => {
     try {
-      const workspace = resolveWorkspace(req.query);
+      const workspace = resolveWorkspace(req);
       res.json({ users: (workspace && workspace.users) || [] });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -241,7 +280,7 @@ function createWebServer() {
   // users who have not been messaged yet still appear ("not_sent").
   app.get('/api/status/today', requireApiAuth, async (req, res) => {
     try {
-      const workspace = resolveWorkspace(req.query);
+      const workspace = resolveWorkspace(req);
       if (!workspace) return res.json({ date: todayString('UTC'), users: [] });
       const tz = tzOf(workspace);
       const date = todayString(tz);
@@ -281,7 +320,7 @@ function createWebServer() {
   // Logged work entries, with optional filters.
   app.get('/api/entries', requireApiAuth, async (req, res) => {
     try {
-      const workspace = resolveWorkspace(req.query);
+      const workspace = resolveWorkspace(req);
       if (!workspace) return res.json({ entries: [] });
       const { user, from, to, q, limit } = req.query;
       const entries = await db.getEntries({
@@ -301,7 +340,7 @@ function createWebServer() {
   // Summary cards.
   app.get('/api/summary', requireApiAuth, async (req, res) => {
     try {
-      const workspace = resolveWorkspace(req.query);
+      const workspace = resolveWorkspace(req);
       if (!workspace) {
         return res.json({
           date: todayString('UTC'),
@@ -342,7 +381,7 @@ function createWebServer() {
   // Per-employee daily hours matrix (default: last 30 days, newest first).
   app.get('/api/hours-matrix', requireApiAuth, async (req, res) => {
     try {
-      const workspace = resolveWorkspace(req.query);
+      const workspace = resolveWorkspace(req);
       if (!workspace) {
         const { from, to } = resolveRange(req.query, 'UTC');
         return res.json({ from, to, users: [], rows: [], totals: {}, grandTotal: 0 });
@@ -359,7 +398,7 @@ function createWebServer() {
   // CSV export of the hours matrix for a selected date range.
   app.get('/api/export.csv', requireApiAuth, async (req, res) => {
     try {
-      const workspace = resolveWorkspace(req.query);
+      const workspace = resolveWorkspace(req);
       if (!workspace) return res.status(404).json({ error: 'no workspace configured' });
       const tz = tzOf(workspace);
       const { from, to } = resolveRange(req.query, tz);

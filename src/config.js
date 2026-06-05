@@ -47,6 +47,27 @@ function getWorkspace(workspaceId) {
   return getWorkspaces().find((w) => w.id === workspaceId);
 }
 
+/**
+ * Returns the configured dashboard users, each shaped
+ * { username, workspaces: string[] }. The `workspaces` array lists the
+ * workspace ids that user may access; the special value "*" grants access to
+ * every configured workspace.
+ */
+function getDashboardUsers() {
+  return loadConfig().dashboard_users || [];
+}
+
+/** Finds a dashboard user by username (case-insensitive), or undefined. */
+function getDashboardUser(username) {
+  const u = String(username || '').toLowerCase();
+  return getDashboardUsers().find((du) => String(du.username || '').toLowerCase() === u);
+}
+
+/** Env var name holding a dashboard user's password, e.g. DASHBOARD_PASSWORD_KALPIT. */
+function dashboardPasswordEnvKey(username) {
+  return `DASHBOARD_PASSWORD_${String(username).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`;
+}
+
 /** Timezone for a workspace (or the first workspace if id omitted), default UTC. */
 function getTimezone(workspaceId) {
   const workspaces = getWorkspaces();
@@ -68,6 +89,9 @@ module.exports = {
   loadConfig,
   getWorkspaces,
   getWorkspace,
+  getDashboardUsers,
+  getDashboardUser,
+  dashboardPasswordEnvKey,
   getTimezone,
   todayString,
   USERS_CONFIG_PATH,
